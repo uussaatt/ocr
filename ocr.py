@@ -256,13 +256,98 @@ def ocr_image_general(image_path):
 
 
 
+class DataStore:
+    """统一数据存储管理器"""
+    def __init__(self, filepath):
+        self.filepath = filepath
+        self.data = {
+            'window_config': {},
+            'stats': {},
+            'history': [],
+            'history_limit': 100,
+            'size_limits': {},
+            'font_config': {'font_size': 11},
+            'popup_windows': {}
+        }
+        self.load()
+
+    def load(self):
+        if self.filepath.exists():
+            try:
+                with open(self.filepath, 'r', encoding='utf-8') as f:
+                    saved = json.load(f)
+                    # 深度合并或更新，这里简单更新顶层键
+                    for k, v in saved.items():
+                        self.data[k] = v
+            except Exception as e:
+                print(f"加载数据文件失败: {e}")
+
+    def save(self):
+        try:
+            with open(self.filepath, 'w', encoding='utf-8') as f:
+                json.dump(self.data, f, ensure_ascii=False, indent=2)
+        except Exception as e:
+            print(f"保存数据文件失败: {e}")
+
+    def get(self, key, default=None):
+        return self.data.get(key, default)
+
+    def set(self, key, value):
+        self.data[key] = value
+        self.save()
+
+    def migrate_legacy_files(self, parent_dir):
+        """从旧的分散文件迁移数据"""
+        legacy_files = {
+            'window_config': 'window_config.json',
+            'stats': 'ocr_stats.json',
+            'history': 'ocr_history.json',
+            'history_limit': 'history_limit.json',
+            'size_limits': 'size_limits.json',
+            'font_config': 'font_config.json',
+            'popup_windows': 'popup_windows.json'
+        }
+        
+        migrated = False
+        for key, filename in legacy_files.items():
+            path = parent_dir / filename
+            if path.exists():
+                try:
+                    with open(path, 'r', encoding='utf-8') as f:
+                        content = json.load(f)
+                        # 特殊处理 history_limit 格式
+                        if key == 'history_limit' and isinstance(content, dict):
+                            self.data[key] = content.get('limit', 100)
+                        else:
+                            self.data[key] = content
+                    print(f"✓ 已迁移旧文件: {filename}")
+                    migrated = True
+                    
+                    # 可选：重命名旧文件作为备份
+                    # try:
+                    #     path.rename(path.with_suffix('.json.bak'))
+                    # except: pass
+                except Exception as e:
+                    print(f"迁移 {filename} 失败: {e}")
+        
+        if migrated:
+            self.save()
+            print("✓ 数据迁移完成，已保存到 ocr_data.json")
+
+
 class OCRApp:
     def __init__(self, root):
         self.root = root
         self.root.title("OCR 文字识别 + 数据分类工具")
         
-        # 窗口配置文件路径
-        self.window_config_file = Path(__file__).parent / 'window_config.json'
+
+        # 数据存储初始化
+        self.data_file = Path(__file__).parent / 'ocr_data.json'
+        self.store = DataStore(self.data_file)
+        
+        # 如果数据文件不存在，尝试迁移旧数据
+        if not self.data_file.exists():
+            self.store.migrate_legacy_files(Path(__file__).parent)
         
         # 加载并应用窗口配置
         self.load_window_config()
@@ -272,16 +357,12 @@ class OCRApp:
         # 绑定窗口关闭事件
         self.root.protocol("WM_DELETE_WINDOW", self.on_closing)
         
-        # 统计文件路径
-        self.stats_file = Path(__file__).parent / 'ocr_stats.json'
-        self.load_stats()
+        # 统计数据
+        self.stats = self.store.get('stats', {})
         
-        # 历史记录文件路径
-        self.history_file = Path(__file__).parent / 'ocr_history.json'
-        self.history_data = []
-        self.history_limit = 100  # 默认保存100条
-        self.load_history_limit()
-        self.load_history()
+        # 历史记录
+        self.history_limit = self.store.get('history_limit', 100)
+        self.history_data = self.store.get('history', [])
         
         # 尺寸限制解锁状态
         self.size_limit_unlocked = False
@@ -299,13 +380,14 @@ class OCRApp:
             'basic_max_height': 3000,      # 快速识别最大高度
             'general_min_width': 0,        # 通用识别最小宽度
             'general_min_height': 0,       # 通用识别最小高度
-            'general_max_width': 8192,     # 通用识别最大宽度（增加到8192）
-            'general_max_height': 8192     # 通用识别最大高度（增加到8192）
+            'general_max_width': 8192,     # 通用识别最大宽度
+            'general_max_height': 8192     # 通用识别最大高度
         }
         self.load_size_limits()
         
         # 数据分类相关属性
-        self.current_font_size = 11
+        self.current_font_size = 11  # 默认字号
+        self.load_font_config()  # 加载保存的字号设置
         self.df = pd.DataFrame(columns=['Label', 'Y', 'X'])
         self.thresholds = []
         self.category_list = []
@@ -750,8 +832,9 @@ class OCRApp:
 
     def on_font_combo_change(self, event):
         """字体大小改变"""
-        self.current_font_size = int(self.combo_font.get());
-        self.apply_font_style();
+        self.current_font_size = int(self.combo_font.get())
+        self.save_font_config()  # 保存字号设置
+        self.apply_font_style()
         self.refresh_all()
 
     def apply_font_style(self):
@@ -2332,21 +2415,20 @@ class OCRApp:
     def load_window_config(self):
         """加载主窗口配置"""
         try:
-            if self.window_config_file.exists():
-                with open(self.window_config_file, 'r', encoding='utf-8') as f:
-                    config = json.load(f)
-                    width = config.get('width', 1300)
-                    height = config.get('height', 900)
-                    x = config.get('x', None)
-                    y = config.get('y', None)
-                    
-                    # 应用窗口尺寸和位置
-                    if x is not None and y is not None:
-                        self.root.geometry(f"{width}x{height}+{x}+{y}")
-                    else:
-                        self.root.geometry(f"{width}x{height}")
-                    
-                    print(f"✓ 已加载窗口配置：{width}x{height}")
+            config = self.store.get('window_config', {})
+            if config:
+                width = config.get('width', 1300)
+                height = config.get('height', 900)
+                x = config.get('x', None)
+                y = config.get('y', None)
+                
+                # 应用窗口尺寸和位置
+                if x is not None and y is not None:
+                    self.root.geometry(f"{width}x{height}+{x}+{y}")
+                else:
+                    self.root.geometry(f"{width}x{height}")
+                
+                print(f"✓ 已加载窗口配置：{width}x{height}")
             else:
                 # 默认尺寸
                 self.root.geometry("1300x900")
@@ -2374,9 +2456,7 @@ class OCRApp:
                     config['x'] = int(parts[2])
                     config['y'] = int(parts[3])
                 
-                with open(self.window_config_file, 'w', encoding='utf-8') as f:
-                    json.dump(config, f, ensure_ascii=False, indent=2)
-                
+                self.store.set('window_config', config)
                 print(f"✓ 已保存窗口配置：{config['width']}x{config['height']}")
         except Exception as e:
             print(f"⚠️ 保存窗口配置失败: {e}")
@@ -2384,12 +2464,8 @@ class OCRApp:
     def load_popup_config(self, window_name):
         """加载弹出窗口配置"""
         try:
-            popup_config_file = Path(__file__).parent / 'popup_windows.json'
-            if popup_config_file.exists():
-                with open(popup_config_file, 'r', encoding='utf-8') as f:
-                    all_configs = json.load(f)
-                    return all_configs.get(window_name, None)
-            return None
+            all_configs = self.store.get('popup_windows', {})
+            return all_configs.get(window_name, None)
         except Exception as e:
             print(f"⚠️ 加载弹出窗口配置失败: {e}")
             return None
@@ -2397,13 +2473,7 @@ class OCRApp:
     def save_popup_config(self, window_name, window):
         """保存弹出窗口配置"""
         try:
-            popup_config_file = Path(__file__).parent / 'popup_windows.json'
-            
-            # 读取现有配置
-            all_configs = {}
-            if popup_config_file.exists():
-                with open(popup_config_file, 'r', encoding='utf-8') as f:
-                    all_configs = json.load(f)
+            all_configs = self.store.get('popup_windows', {})
             
             # 获取窗口尺寸和位置
             geometry = window.geometry()
@@ -2421,10 +2491,7 @@ class OCRApp:
                 
                 # 更新配置
                 all_configs[window_name] = config
-                
-                # 保存到文件
-                with open(popup_config_file, 'w', encoding='utf-8') as f:
-                    json.dump(all_configs, f, ensure_ascii=False, indent=2)
+                self.store.set('popup_windows', all_configs)
                 
                 print(f"✓ 已保存 {window_name} 窗口配置：{config['width']}x{config['height']}")
         except Exception as e:
@@ -2485,14 +2552,8 @@ class OCRApp:
     def load_history_limit(self):
         """加载历史记录数量限制"""
         try:
-            limit_file = Path(__file__).parent / 'history_limit.json'
-            if limit_file.exists():
-                with open(limit_file, 'r', encoding='utf-8') as f:
-                    data = json.load(f)
-                    self.history_limit = data.get('limit', 100)
-                print(f"✓ 历史记录限制：{self.history_limit} 条")
-            else:
-                self.history_limit = 100
+            self.history_limit = self.store.get('history_limit', 100)
+            print(f"✓ 历史记录限制：{self.history_limit} 条")
         except Exception as e:
             print(f"⚠️ 加载历史记录限制失败: {e}")
             self.history_limit = 100
@@ -2500,9 +2561,7 @@ class OCRApp:
     def save_history_limit(self):
         """保存历史记录数量限制"""
         try:
-            limit_file = Path(__file__).parent / 'history_limit.json'
-            with open(limit_file, 'w', encoding='utf-8') as f:
-                json.dump({'limit': self.history_limit}, f, ensure_ascii=False, indent=2)
+            self.store.set('history_limit', self.history_limit)
             print(f"✓ 已保存历史记录限制：{self.history_limit} 条")
         except Exception as e:
             print(f"⚠️ 保存历史记录限制失败: {e}")
@@ -2510,13 +2569,8 @@ class OCRApp:
     def load_history(self):
         """加载历史记录"""
         try:
-            if self.history_file.exists():
-                with open(self.history_file, 'r', encoding='utf-8') as f:
-                    self.history_data = json.load(f)
-                print(f"✓ 已加载历史记录：{len(self.history_data)} 条")
-            else:
-                self.history_data = []
-                print("✓ 首次使用，创建新的历史记录文件")
+            self.history_data = self.store.get('history', [])
+            print(f"✓ 已加载历史记录：{len(self.history_data)} 条")
         except Exception as e:
             print(f"⚠️ 加载历史记录失败: {e}")
             self.history_data = []
@@ -2524,8 +2578,7 @@ class OCRApp:
     def save_history(self):
         """保存历史记录"""
         try:
-            with open(self.history_file, 'w', encoding='utf-8') as f:
-                json.dump(self.history_data, f, ensure_ascii=False, indent=2)
+            self.store.set('history', self.history_data)
             print(f"✓ 已保存历史记录：{len(self.history_data)} 条")
         except Exception as e:
             print(f"⚠️ 保存历史记录失败: {e}")
@@ -2578,13 +2631,8 @@ class OCRApp:
     def load_stats(self):
         """加载统计数据"""
         try:
-            if self.stats_file.exists():
-                with open(self.stats_file, 'r', encoding='utf-8') as f:
-                    self.stats = json.load(f)
-                print(f"✓ 已加载统计数据：{len(self.stats)} 天的记录")
-            else:
-                self.stats = {}
-                print("✓ 首次使用，创建新的统计文件")
+            self.stats = self.store.get('stats', {})
+            print(f"✓ 已加载统计数据：{len(self.stats)} 天的记录")
         except Exception as e:
             print(f"⚠️ 加载统计数据失败: {e}")
             self.stats = {}
@@ -2592,31 +2640,47 @@ class OCRApp:
     def load_size_limits(self):
         """加载尺寸限制配置"""
         try:
-            limits_file = Path(__file__).parent / 'size_limits.json'
-            if limits_file.exists():
-                with open(limits_file, 'r', encoding='utf-8') as f:
-                    saved_limits = json.load(f)
-                    self.size_limits.update(saved_limits)
+            saved_limits = self.store.get('size_limits', {})
+            if saved_limits:
+                self.size_limits.update(saved_limits)
                 print(f"✓ 已加载尺寸限制配置: {saved_limits}")
-                # 如果界面已经创建，立即更新显示
-                if hasattr(self, 'size_hint_label'):
-                    self.update_size_hint_display()
-            else:
-                print(f"⚠️ 尺寸限制配置文件不存在，使用默认配置")
+            # 如果界已经创建，立即更新显示
+            if hasattr(self, 'size_hint_label'):
+                self.update_size_hint_display()
         except Exception as e:
             print(f"⚠️ 加载尺寸限制配置失败: {e}")
     
     def save_size_limits(self):
         """保存尺寸限制配置"""
         try:
-            limits_file = Path(__file__).parent / 'size_limits.json'
-            with open(limits_file, 'w', encoding='utf-8') as f:
-                json.dump(self.size_limits, f, ensure_ascii=False, indent=2)
+            self.store.set('size_limits', self.size_limits)
             print(f"✓ 尺寸限制配置已保存")
             # 保存后立即更新界面显示
             self.update_size_hint_display()
         except Exception as e:
             print(f"⚠️ 保存尺寸限制配置失败: {e}")
+    
+    def load_font_config(self):
+        """加载字号配置"""
+        try:
+            config = self.store.get('font_config', {})
+            if config:
+                self.current_font_size = config.get('font_size', 11)
+            else:
+                self.current_font_size = 11
+            print(f"✓ 已加载字号配置: {self.current_font_size}")
+        except Exception as e:
+            print(f"⚠️ 加载字号配置失败: {e}")
+            self.current_font_size = 11
+    
+    def save_font_config(self):
+        """保存字号配置"""
+        try:
+            config = {'font_size': self.current_font_size}
+            self.store.set('font_config', config)
+            print(f"✓ 字号配置已保存: {self.current_font_size}")
+        except Exception as e:
+            print(f"⚠️ 保存字号配置失败: {e}")
     
     def update_size_hint_display(self):
         """更新界面上的尺寸提示信息"""
@@ -2801,8 +2865,7 @@ class OCRApp:
     def save_stats(self):
         """保存统计数据"""
         try:
-            with open(self.stats_file, 'w', encoding='utf-8') as f:
-                json.dump(self.stats, f, ensure_ascii=False, indent=2)
+            self.store.set('stats', self.stats)
         except Exception as e:
             print(f"⚠️ 保存统计数据失败: {e}")
             messagebox.showerror("错误", f"统计数据保存失败：{e}")
