@@ -654,9 +654,11 @@ class OCRApp:
         self.generate_report_from_tree()
 
     def open_add_data_dialog(self):
-        """打开新增数据对话框"""
-        dialog = tk.Toplevel(self.root);
-        dialog.title("新增数据")
+        """打开新增数据对话框 (美化版)"""
+        # 使用 create_popup_window 创建窗口，统一风格
+        dialog = self.create_popup_window(self.root, "新增数据", "add_data_dialog", 420, 320)
+        
+        # 准备默认数据
         default_y, default_x, insert_pos = 0.0, 0.0, len(self.df)
         selected = self.tree.selection()
         if selected and self.tree.parent(selected[0]):
@@ -666,30 +668,75 @@ class OCRApp:
                 default_y, default_x = self.df.loc[row_idx, 'Y'] + 1, self.df.loc[row_idx, 'X']
                 insert_pos = self.df.index.get_loc(row_idx) + 1
 
-        tk.Label(dialog, text="名称:").pack();
-        n_ent = tk.Entry(dialog);
-        n_ent.pack()
-        tk.Label(dialog, text="Y:").pack();
-        y_ent = tk.Entry(dialog);
-        y_ent.insert(0, str(default_y));
-        y_ent.pack()
-        tk.Label(dialog, text="X:").pack();
-        x_ent = tk.Entry(dialog);
-        x_ent.insert(0, str(default_x));
-        x_ent.pack()
+        # 1. 标题头
+        tk.Label(dialog, text="➕ 添加新数据点", font=("Microsoft YaHei", 14, "bold"), fg="#333").pack(pady=(20, 15))
 
-        def save():
+        # 2. 表单区域
+        form_frame = tk.Frame(dialog)
+        form_frame.pack(padx=40, pady=5, fill=tk.X)
+        
+        # 样式配置
+        lbl_font = ("Microsoft YaHei", 10)
+        ent_font = ("Arial", 11)
+        
+        # 名称
+        tk.Label(form_frame, text="名称 Name:", font=lbl_font, fg="#555").grid(row=0, column=0, sticky="w", pady=8)
+        n_ent = tk.Entry(form_frame, font=ent_font, bg="white", highlightthickness=1, relief="solid", bd=1)
+        n_ent.config(highlightbackground="#ccc", highlightcolor="#2196F3") # Mac/Unix only potentially, but harmless
+        n_ent.grid(row=0, column=1, sticky="ew", padx=(10, 0))
+        n_ent.focus_set()
+        
+        # Y坐标
+        tk.Label(form_frame, text="数值 Y:", font=lbl_font, fg="#555").grid(row=1, column=0, sticky="w", pady=8)
+        y_ent = tk.Entry(form_frame, font=ent_font, bg="white", highlightthickness=1, relief="solid", bd=1)
+        y_ent.insert(0, str(default_y))
+        y_ent.grid(row=1, column=1, sticky="ew", padx=(10, 0))
+        
+        # X坐标
+        tk.Label(form_frame, text="数值 X (可选):", font=lbl_font, fg="#555").grid(row=2, column=0, sticky="w", pady=8)
+        x_ent = tk.Entry(form_frame, font=ent_font, bg="white", highlightthickness=1, relief="solid", bd=1)
+        x_ent.insert(0, str(default_x))
+        x_ent.grid(row=2, column=1, sticky="ew", padx=(10, 0))
+        
+        form_frame.columnconfigure(1, weight=1)
+
+        # 3. 按钮区域
+        btn_frame = tk.Frame(dialog)
+        btn_frame.pack(pady=25, fill=tk.X)
+        
+        # 居中容器
+        center_frame = tk.Frame(btn_frame)
+        center_frame.pack()
+
+        def save(event=None):
+            name = n_ent.get().strip() or "未命名"
             try:
-                row = pd.DataFrame([[n_ent.get() or "未命名", float(y_ent.get()), float(x_ent.get())]],
-                                   columns=['Label', 'Y', 'X'])
+                y_val = float(y_ent.get())
+                x_val = float(x_ent.get())
+                
+                row = pd.DataFrame([[name, y_val, x_val]], columns=['Label', 'Y', 'X'])
                 self.df = pd.concat([self.df.iloc[:insert_pos], row, self.df.iloc[insert_pos:]]).reset_index(drop=True)
                 self.category_list, self.marked_indices = [], set()
-                self.refresh_all();
+                self.refresh_all()
                 dialog.destroy()
-            except:
-                messagebox.showerror("错误", "数值格式不对")
+            except ValueError:
+                messagebox.showerror("输入错误", "坐标值必须为数字！", parent=dialog)
+            except Exception as e:
+                messagebox.showerror("错误", f"添加失败: {e}", parent=dialog)
 
-        tk.Button(dialog, text="保存", command=save).pack(pady=10)
+        save_btn = tk.Button(center_frame, text="保 存", command=save, bg="#4CAF50", fg="white", 
+                            font=("Microsoft YaHei", 10, "bold"), width=12, padx=5, pady=3,
+                            cursor="hand2", relief="raised", bd=0)
+        save_btn.pack(side=tk.LEFT, padx=10)
+        
+        cancel_btn = tk.Button(center_frame, text="取 消", command=dialog.destroy, bg="#f5f5f5", fg="#333",
+                              font=("Microsoft YaHei", 10), width=10, padx=5, pady=3,
+                              cursor="hand2", relief="raised")
+        cancel_btn.pack(side=tk.LEFT, padx=10)
+        
+        # 绑定回车键保存
+        dialog.bind('<Return>', save)
+        dialog.bind('<Escape>', lambda e: dialog.destroy())
 
     def on_drag_start(self, event):
         """开始拖拽"""
@@ -840,8 +887,12 @@ class OCRApp:
     def apply_font_style(self):
         """应用字体样式"""
         s = self.current_font_size
+        # 更新全局Treeview样式 (内容和标题)
         ttk.Style().configure("Treeview", font=("Microsoft YaHei", s), rowheight=int(s * 2.5))
-        self.tree.tag_configure('marked', foreground='red', font=("", s, "bold"))
+        ttk.Style().configure("Treeview.Heading", font=("Microsoft YaHei", s, "bold"))
+        
+        # 更新特定标签样式
+        self.tree.tag_configure('marked', foreground='red', font=("Microsoft YaHei", s, "bold"))
         self.report_text.configure(font=("Microsoft YaHei", s))
 
     def on_right_click(self, event):
@@ -2826,6 +2877,9 @@ class OCRApp:
                             else:
                                 widget.config(text=f"💡 高精度({acc_min_w}~{acc_max_w}x{acc_min_h}~{acc_max_h}) | 快速({bas_min_w}~{bas_max_w}x{bas_min_h}~{bas_max_h})")
                 
+                # 保存窗口尺寸配置
+                self.save_popup_config("size_limit_settings", settings_window)
+                
                 settings_window.destroy()
                 messagebox.showinfo("成功", "尺寸限制设置已保存！")
                 
@@ -2958,8 +3012,9 @@ class OCRApp:
         
         # 创建表格
         columns = ("时间", "类型", "文件数", "总行数", "操作")
+        # 使用自定义样式 History.Treeview，避免影响全局 Treeview 样式
         tree = ttk.Treeview(table_frame, columns=columns, show="headings", 
-                           yscrollcommand=scrollbar.set, height=25)
+                            yscrollcommand=scrollbar.set, height=25, style="History.Treeview")
         
         # 设置列标题
         tree.heading("时间", text="识别时间")
@@ -2978,10 +3033,10 @@ class OCRApp:
         scrollbar.config(command=tree.yview)
         tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         
-        # 配置样式
+        # 配置样式 (使用自定义样式名)
         style = ttk.Style()
-        style.configure("Treeview", font=("Microsoft YaHei", 10), rowheight=30)
-        style.configure("Treeview.Heading", font=("Microsoft YaHei", 11, "bold"))
+        style.configure("History.Treeview", font=("Microsoft YaHei", 10), rowheight=30)
+        style.configure("History.Treeview.Heading", font=("Microsoft YaHei", 11, "bold"))
         
         # 插入数据
         for idx, item in enumerate(self.history_data):
