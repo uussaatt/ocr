@@ -604,6 +604,7 @@ class OCRApp:
         self.tree.bind("<B1-Motion>", self.on_drag_motion)
         self.tree.bind("<ButtonRelease-1>", self.on_drag_release)
         self.tree.bind("<Button-3>", self.on_right_click)
+        self.tree.bind("<Double-1>", self.on_double_click)  # 添加双击事件
 
         # --- 报告页 ---
         self.tab_report = tk.Frame(self.inner_nb)
@@ -896,27 +897,419 @@ class OCRApp:
         self.report_text.configure(font=("Microsoft YaHei", s))
 
     def on_right_click(self, event):
-        """右键点击事件"""
+        """右键点击事件 - 显示上下文菜单"""
         iid = self.tree.identify_row(event.y)
         if iid:
             self.tree.selection_set(iid)
+            
+            # 创建右键菜单
+            context_menu = tk.Menu(self.root, tearoff=0)
+            
             if self.tree.parent(iid):
+                # 数据项右键菜单
                 idx = int(self.tree.item(iid, 'values')[2])
-                if idx in self.marked_indices:
-                    self.marked_indices.remove(idx)
+                is_marked = idx in self.marked_indices
+                
+                if is_marked:
+                    context_menu.add_command(label="🔴 取消标记", 
+                                           command=lambda: self.toggle_mark(idx))
                 else:
-                    self.marked_indices.add(idx)
-                self.refresh_all()
+                    context_menu.add_command(label="✅ 添加标记", 
+                                           command=lambda: self.toggle_mark(idx))
+                
+                context_menu.add_separator()
+                context_menu.add_command(label="✏️ 编辑名称", 
+                                       command=lambda: self.edit_item_name(iid))
+                context_menu.add_command(label="❌ 删除项目", 
+                                       command=lambda: self.delete_single_item(iid))
             else:
-                old = self.tree.item(iid, "text").replace("📂 ", "")
-                new = simpledialog.askstring("重命名", "分类名称:", initialvalue=old)
-                if new:
-                    idx = self.tree.get_children("").index(iid);
-                    if idx < len(self.category_list):
-                        self.category_list[idx]['name'] = new
-                    else:
-                        self.custom_cat_names[old] = new
+                # 分类目录右键菜单
+                context_menu.add_command(label="✏️ 重命名分类", 
+                                       command=lambda: self.rename_category(iid))
+                context_menu.add_separator()
+                context_menu.add_command(label="📊 查看统计", 
+                                       command=lambda: self.show_category_stats(iid))
+                context_menu.add_command(label="🎨 更改颜色", 
+                                       command=lambda: self.change_category_color(iid))
+            
+            # 显示菜单
+            try:
+                context_menu.tk_popup(event.x_root, event.y_root)
+            finally:
+                context_menu.grab_release()
+    
+    def on_double_click(self, event):
+        """双击事件 - 直接在单元格中编辑"""
+        iid = self.tree.identify_row(event.y)
+        column = self.tree.identify_column(event.x)
+        
+        if iid:
+            self.tree.selection_set(iid)
+            
+            if self.tree.parent(iid):
+                # 双击数据项
+                if column == '#1':
+                    # 双击名称列 - 直接编辑
+                    self.start_inline_edit(iid, column)
+                elif column == '#2':
+                    # 双击标记列 - 切换标记状态
+                    values = self.tree.item(iid, 'values')
+                    if values and len(values) > 2:
+                        idx = int(values[2])
+                        self.toggle_mark(idx)
+            else:
+                # 双击分类目录 - 直接编辑分类名
+                if column == '#0':
+                    self.start_inline_edit(iid, column)
+    
+    def start_inline_edit(self, iid, column):
+        """开始内联编辑"""
+        try:
+            # 如果已经有编辑器在运行，先结束它
+            if hasattr(self, 'inline_editor'):
+                self.finish_inline_edit()
+            
+            # 获取单元格的位置和大小
+            bbox = self.tree.bbox(iid, column)
+            if not bbox:
+                return
+            
+            x, y, width, height = bbox
+            
+            # 获取当前值
+            if column == '#0':
+                # 分类目录列
+                current_value = self.tree.item(iid, "text").replace("📂 ", "")
+                edit_type = 'category'
+            elif column == '#1':
+                # 名称列
+                values = self.tree.item(iid, 'values')
+                if not values:
+                    return
+                current_value = values[0]
+                edit_type = 'item_name'
+            else:
+                return
+            
+            # 创建编辑器Entry控件
+            self.inline_editor = tk.Entry(self.tree, font=("Microsoft YaHei", self.current_font_size))
+            self.inline_editor.place(x=x, y=y, width=width, height=height)
+            
+            # 设置初始值并全选
+            self.inline_editor.insert(0, current_value)
+            self.inline_editor.select_range(0, tk.END)
+            self.inline_editor.focus_set()
+            
+            # 保存编辑信息
+            self.edit_info = {
+                'iid': iid,
+                'column': column,
+                'original_value': current_value,
+                'edit_type': edit_type
+            }
+            
+            # 绑定事件
+            self.inline_editor.bind('<Return>', self.finish_inline_edit)
+            self.inline_editor.bind('<Escape>', self.cancel_inline_edit)
+            self.inline_editor.bind('<FocusOut>', self.finish_inline_edit)
+            
+            # 绑定树视图事件，当用户点击其他地方时结束编辑
+            self.tree.bind('<Button-1>', self.on_tree_click_during_edit, add='+')
+            
+        except Exception as e:
+            print(f"开始内联编辑失败: {e}")
+    
+    def on_tree_click_during_edit(self, event):
+        """编辑期间点击树视图的其他地方"""
+        if hasattr(self, 'inline_editor'):
+            # 检查点击位置是否在编辑器上
+            editor_x = self.inline_editor.winfo_x()
+            editor_y = self.inline_editor.winfo_y()
+            editor_width = self.inline_editor.winfo_width()
+            editor_height = self.inline_editor.winfo_height()
+            
+            if not (editor_x <= event.x <= editor_x + editor_width and 
+                    editor_y <= event.y <= editor_y + editor_height):
+                # 点击在编辑器外部，结束编辑
+                self.finish_inline_edit()
+    
+    def finish_inline_edit(self, event=None):
+        """完成内联编辑"""
+        try:
+            if not hasattr(self, 'inline_editor') or not hasattr(self, 'edit_info'):
+                return
+            
+            new_value = self.inline_editor.get().strip()
+            edit_info = self.edit_info
+            
+            # 清理编辑器
+            self.cleanup_inline_editor()
+            
+            # 如果值没有改变，直接返回
+            if new_value == edit_info['original_value'] or not new_value:
+                return
+            
+            # 根据编辑类型更新数据
+            if edit_info['edit_type'] == 'category':
+                # 更新分类名称
+                iid = edit_info['iid']
+                old_name = edit_info['original_value']
+                idx = self.tree.get_children("").index(iid)
+                
+                if idx < len(self.category_list):
+                    self.category_list[idx]['name'] = new_value
+                else:
+                    self.custom_cat_names[old_name] = new_value
+                
+                self.refresh_all()
+                self.show_temp_message(f"✓ 分类已重命名：{new_value}")
+                
+            elif edit_info['edit_type'] == 'item_name':
+                # 更新数据项名称
+                values = self.tree.item(edit_info['iid'], 'values')
+                if values and len(values) > 2:
+                    idx = int(values[2])
+                    self.df.loc[idx, 'Label'] = new_value
                     self.refresh_all()
+                    self.show_temp_message(f"✓ 已更新：{new_value}")
+            
+        except Exception as e:
+            print(f"完成内联编辑失败: {e}")
+            self.cleanup_inline_editor()
+    
+    def cancel_inline_edit(self, event=None):
+        """取消内联编辑"""
+        self.cleanup_inline_editor()
+    
+    def cleanup_inline_editor(self):
+        """清理内联编辑器"""
+        try:
+            if hasattr(self, 'inline_editor'):
+                self.inline_editor.destroy()
+                delattr(self, 'inline_editor')
+            
+            if hasattr(self, 'edit_info'):
+                delattr(self, 'edit_info')
+            
+            # 解绑树视图的临时事件
+            self.tree.unbind('<Button-1>')
+            # 重新绑定原有的事件
+            self.tree.bind("<ButtonPress-1>", self.on_drag_start)
+            
+        except Exception as e:
+            print(f"清理内联编辑器失败: {e}")
+    
+    def edit_item_name_inline(self, iid):
+        """内联编辑数据项名称（保留作为备用方法）"""
+        # 这个方法现在被 start_inline_edit 替代，但保留以防需要
+        self.start_inline_edit(iid, '#1')
+    
+    def rename_category_inline(self, iid):
+        """内联重命名分类目录（保留作为备用方法）"""
+        # 这个方法现在被 start_inline_edit 替代，但保留以防需要
+        self.start_inline_edit(iid, '#0')
+    
+    def show_temp_message(self, message, duration=2000):
+        """显示临时消息提示"""
+        try:
+            # 在状态栏或其他地方显示临时消息
+            # 这里我们可以在树视图上方创建一个临时标签
+            if hasattr(self, 'temp_message_label'):
+                self.temp_message_label.destroy()
+            
+            self.temp_message_label = tk.Label(self.tab_tree, text=message, 
+                                             bg="#E8F5E8", fg="#2E7D32", 
+                                             font=("Arial", 10), pady=5)
+            self.temp_message_label.pack(side=tk.TOP, fill=tk.X, after=self.tree)
+            
+            # 设置定时器自动隐藏消息
+            self.root.after(duration, lambda: self.hide_temp_message())
+        except:
+            pass  # 如果显示临时消息失败，不影响主要功能
+    
+    def hide_temp_message(self):
+        """隐藏临时消息"""
+        try:
+            if hasattr(self, 'temp_message_label'):
+                self.temp_message_label.destroy()
+                delattr(self, 'temp_message_label')
+        except:
+            pass
+    
+    def toggle_mark(self, idx):
+        """切换标记状态"""
+        if idx in self.marked_indices:
+            self.marked_indices.remove(idx)
+        else:
+            self.marked_indices.add(idx)
+        self.refresh_all()
+    
+    def edit_item_name(self, iid):
+        """编辑数据项名称"""
+        try:
+            values = self.tree.item(iid, 'values')
+            if values:
+                old_name = values[0]
+                idx = int(values[2])
+                
+                new_name = simpledialog.askstring(
+                    "编辑名称", 
+                    f"请输入新的名称：\n\n原名称：{old_name}", 
+                    initialvalue=old_name
+                )
+                
+                if new_name and new_name != old_name:
+                    # 更新DataFrame中的数据
+                    self.df.loc[idx, 'Label'] = new_name
+                    self.refresh_all()
+                    messagebox.showinfo("成功", f"名称已更新：\n{old_name} → {new_name}")
+        except Exception as e:
+            messagebox.showerror("错误", f"编辑名称失败：{str(e)}")
+    
+    def rename_category(self, iid):
+        """重命名分类目录"""
+        try:
+            old_name = self.tree.item(iid, "text").replace("📂 ", "")
+            
+            new_name = simpledialog.askstring(
+                "重命名分类", 
+                f"请输入新的分类名称：\n\n原名称：{old_name}", 
+                initialvalue=old_name
+            )
+            
+            if new_name and new_name != old_name:
+                # 查找并更新分类名称
+                idx = self.tree.get_children("").index(iid)
+                if idx < len(self.category_list):
+                    self.category_list[idx]['name'] = new_name
+                else:
+                    self.custom_cat_names[old_name] = new_name
+                
+                self.refresh_all()
+                messagebox.showinfo("成功", f"分类名称已更新：\n{old_name} → {new_name}")
+        except Exception as e:
+            messagebox.showerror("错误", f"重命名分类失败：{str(e)}")
+    
+    def delete_single_item(self, iid):
+        """删除单个数据项"""
+        try:
+            values = self.tree.item(iid, 'values')
+            if values:
+                name = values[0]
+                idx = int(values[2])
+                
+                if messagebox.askyesno("确认删除", f"确定要删除以下数据项吗？\n\n名称：{name}"):
+                    # 从DataFrame中删除
+                    self.df = self.df.drop(idx).reset_index(drop=True)
+                    # 从标记集合中移除
+                    if idx in self.marked_indices:
+                        self.marked_indices.remove(idx)
+                    # 更新索引（因为删除了一行，后面的索引都要减1）
+                    self.marked_indices = {i-1 if i > idx else i for i in self.marked_indices if i != idx}
+                    
+                    self.refresh_all()
+                    messagebox.showinfo("成功", f"已删除数据项：{name}")
+        except Exception as e:
+            messagebox.showerror("错误", f"删除失败：{str(e)}")
+    
+    def show_category_stats(self, iid):
+        """显示分类统计信息"""
+        try:
+            category_name = self.tree.item(iid, "text").replace("📂 ", "")
+            children = self.tree.get_children(iid)
+            
+            if not children:
+                messagebox.showinfo("统计信息", f"分类「{category_name}」\n\n暂无数据项")
+                return
+            
+            total_count = len(children)
+            marked_count = 0
+            
+            for child in children:
+                values = self.tree.item(child, 'values')
+                if values and len(values) > 2:
+                    idx = int(values[2])
+                    if idx in self.marked_indices:
+                        marked_count += 1
+            
+            unmarked_count = total_count - marked_count
+            
+            stats_info = f"分类「{category_name}」统计信息：\n\n"
+            stats_info += f"📊 总数据项：{total_count} 个\n"
+            stats_info += f"✅ 已标记：{marked_count} 个\n"
+            stats_info += f"⭕ 未标记：{unmarked_count} 个\n"
+            
+            if total_count > 0:
+                marked_percent = (marked_count / total_count) * 100
+                stats_info += f"📈 标记率：{marked_percent:.1f}%"
+            
+            messagebox.showinfo("分类统计", stats_info)
+        except Exception as e:
+            messagebox.showerror("错误", f"获取统计信息失败：{str(e)}")
+    
+    def change_category_color(self, iid):
+        """更改分类颜色"""
+        try:
+            category_name = self.tree.item(iid, "text").replace("📂 ", "")
+            idx = self.tree.get_children("").index(iid)
+            
+            if idx < len(self.category_list):
+                current_color = self.category_list[idx]['color']
+                
+                # 创建颜色选择对话框
+                color_window = tk.Toplevel(self.root)
+                color_window.title("选择颜色")
+                color_window.geometry("400x300")
+                color_window.transient(self.root)
+                color_window.grab_set()
+                
+                # 居中显示
+                color_window.update_idletasks()
+                x = (color_window.winfo_screenwidth() // 2) - (400 // 2)
+                y = (color_window.winfo_screenheight() // 2) - (300 // 2)
+                color_window.geometry(f"400x300+{x}+{y}")
+                
+                tk.Label(color_window, text=f"为分类「{category_name}」选择颜色", 
+                        font=("Arial", 12, "bold")).pack(pady=15)
+                
+                selected_color = [current_color]  # 用列表存储选择的颜色
+                
+                # 颜色按钮框架
+                color_frame = tk.Frame(color_window)
+                color_frame.pack(pady=20)
+                
+                colors = ['#FF0000', '#00AA00', '#FF8C00', '#9400D3', '#0000FF', '#00CED1', 
+                         '#FF1493', '#32CD32', '#FFD700', '#8A2BE2', '#00BFFF', '#FF6347']
+                
+                for i, color in enumerate(colors):
+                    row = i // 4
+                    col = i % 4
+                    
+                    def make_color_callback(c):
+                        return lambda: [selected_color.__setitem__(0, c), color_window.destroy()]
+                    
+                    btn = tk.Button(color_frame, bg=color, width=8, height=3,
+                                   command=make_color_callback(color),
+                                   relief=tk.RAISED if color != current_color else tk.SUNKEN,
+                                   bd=3 if color == current_color else 1)
+                    btn.grid(row=row, column=col, padx=5, pady=5)
+                
+                # 取消按钮
+                tk.Button(color_window, text="取消", command=color_window.destroy,
+                         bg="#757575", fg="white", padx=20, pady=8).pack(pady=15)
+                
+                # 等待用户选择
+                self.root.wait_window(color_window)
+                
+                # 应用新颜色
+                if selected_color[0] != current_color:
+                    self.category_list[idx]['color'] = selected_color[0]
+                    self.refresh_all()
+                    messagebox.showinfo("成功", f"分类「{category_name}」的颜色已更新")
+            else:
+                messagebox.showinfo("提示", "该分类不支持更改颜色")
+        except Exception as e:
+            messagebox.showerror("错误", f"更改颜色失败：{str(e)}")
 
     def refresh_all(self):
         """刷新所有"""
