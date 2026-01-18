@@ -387,7 +387,13 @@ class OCRApp:
         
         # 数据分类相关属性
         self.current_font_size = 11  # 默认字号
+        self.font_config_file = Path(__file__).parent / 'font_config.json'  # 字号配置文件
         self.load_font_config()  # 加载保存的字号设置
+        
+        # 空格规则配置
+        self.space_config_file = Path(__file__).parent / 'space_rules_config.json'
+        self.space_presets = {}  # 用户保存的空格规则预设
+        self.load_space_config()  # 加载空格规则配置
         self.df = pd.DataFrame(columns=['Label', 'Y', 'X'])
         self.thresholds = []
         self.category_list = []
@@ -591,6 +597,10 @@ class OCRApp:
         tk.Label(t_bar, text="|").pack(side=tk.LEFT, padx=2)
         tk.Button(t_bar, text="↑ 上移", command=self.move_item_up).pack(side=tk.LEFT, padx=2)
         tk.Button(t_bar, text="↓ 下移", command=self.move_item_down).pack(side=tk.LEFT, padx=2)
+        tk.Label(t_bar, text="|").pack(side=tk.LEFT, padx=2)
+        tk.Button(t_bar, text="🔤 加空格", command=self.add_spaces_to_tree_items, bg="#e3f2fd").pack(side=tk.LEFT, padx=2)
+        tk.Button(t_bar, text="🚩 标记/取消", command=self.toggle_mark_selected, bg="#fffde7").pack(side=tk.LEFT, padx=2)
+        tk.Button(t_bar, text="⚙️ 空格设置", command=self.show_space_settings, bg="#f3e5f5").pack(side=tk.LEFT, padx=2)
 
         self.tree = ttk.Treeview(self.tab_tree, columns=('Label', 'Status', 'Index'), show='tree headings',
                                  displaycolumns=('Label', 'Status'))
@@ -605,6 +615,7 @@ class OCRApp:
         self.tree.bind("<ButtonRelease-1>", self.on_drag_release)
         self.tree.bind("<Button-3>", self.on_right_click)
         self.tree.bind("<Double-1>", self.on_double_click)  # 添加双击事件
+        self.tree.bind("<space>", self.toggle_mark_selected)  # 空格键切换标记
 
         # --- 报告页 ---
         self.tab_report = tk.Frame(self.inner_nb)
@@ -897,46 +908,35 @@ class OCRApp:
         self.report_text.configure(font=("Microsoft YaHei", s))
 
     def on_right_click(self, event):
-        """右键点击事件 - 显示上下文菜单"""
+        """右键点击事件 - 数据项直接切换标记，分类目录显示菜单"""
         iid = self.tree.identify_row(event.y)
-        if iid:
+        if not iid:
+            return
+
+        # 多选支持：如果点击的项目已在选中列表中，不改变选中状态
+        if iid not in self.tree.selection():
             self.tree.selection_set(iid)
-            
-            # 创建右键菜单
-            context_menu = tk.Menu(self.root, tearoff=0)
-            
-            if self.tree.parent(iid):
-                # 数据项右键菜单
-                idx = int(self.tree.item(iid, 'values')[2])
-                is_marked = idx in self.marked_indices
-                
-                if is_marked:
-                    context_menu.add_command(label="🔴 取消标记", 
-                                           command=lambda: self.toggle_mark(idx))
-                else:
-                    context_menu.add_command(label="✅ 添加标记", 
-                                           command=lambda: self.toggle_mark(idx))
-                
-                context_menu.add_separator()
-                context_menu.add_command(label="✏️ 编辑名称", 
-                                       command=lambda: self.edit_item_name(iid))
-                context_menu.add_command(label="❌ 删除项目", 
-                                       command=lambda: self.delete_single_item(iid))
-            else:
-                # 分类目录右键菜单
-                context_menu.add_command(label="✏️ 重命名分类", 
-                                       command=lambda: self.rename_category(iid))
-                context_menu.add_separator()
-                context_menu.add_command(label="📊 查看统计", 
-                                       command=lambda: self.show_category_stats(iid))
-                context_menu.add_command(label="🎨 更改颜色", 
-                                       command=lambda: self.change_category_color(iid))
-            
-            # 显示菜单
-            try:
-                context_menu.tk_popup(event.x_root, event.y_root)
-            finally:
-                context_menu.grab_release()
+        
+        if self.tree.parent(iid):
+            # === 数据项：对所有选中项切换标记 ===
+            self.toggle_mark_selected()
+            return
+        
+        # === 分类目录：显示菜单 ===
+        context_menu = tk.Menu(self.root, tearoff=0)
+        context_menu.add_command(label="✏️ 重命名分类", 
+                               command=lambda: self.rename_category(iid))
+        context_menu.add_separator()
+        context_menu.add_command(label="📊 查看统计", 
+                               command=lambda: self.show_category_stats(iid))
+        context_menu.add_command(label="🎨 更改颜色", 
+                               command=lambda: self.change_category_color(iid))
+        
+        # 显示菜单
+        try:
+            context_menu.tk_popup(event.x_root, event.y_root)
+        finally:
+            context_menu.grab_release()
     
     def on_double_click(self, event):
         """双击事件 - 直接在单元格中编辑"""
@@ -1136,13 +1136,37 @@ class OCRApp:
         except:
             pass
     
-    def toggle_mark(self, idx):
+    def toggle_mark(self, idx, refresh=True):
         """切换标记状态"""
         if idx in self.marked_indices:
             self.marked_indices.remove(idx)
         else:
             self.marked_indices.add(idx)
-        self.refresh_all()
+        if refresh:
+            self.refresh_all()
+    
+    def toggle_mark_selected(self, event=None):
+        """切换选中项的标记状态"""
+        selected_items = self.tree.selection()
+        if not selected_items:
+            return
+            
+        modified = False
+        for iid in selected_items:
+            # Check if item exists before accessing
+            if self.tree.exists(iid) and self.tree.parent(iid):
+                values = self.tree.item(iid, 'values')
+                if values and len(values) > 2:
+                    idx = int(values[2])
+                    self.toggle_mark(idx, refresh=False)
+                    modified = True
+        
+        if modified:
+            self.refresh_all()
+        
+        # 如果是按键触发的，防止默认行为（如滚动）
+        if event:
+            return "break"
     
     def edit_item_name(self, iid):
         """编辑数据项名称"""
@@ -1328,6 +1352,461 @@ class OCRApp:
         """重置所有"""
         self.thresholds, self.category_list, self.marked_indices, self.custom_cat_names = [], [], set(), {};
         self.refresh_all()
+    
+    def add_spaces_to_tree_items(self):
+        """为分类目录树中的项目名称添加空格"""
+        try:
+            if self.df.empty:
+                messagebox.showwarning("提示", "没有数据可以处理！")
+                return
+            
+            # 直接应用规则，不再弹出窗口
+            # 默认使用“数字编号”预设，或者结合所有预设的规则
+            all_custom_chars = []
+            
+            # 收集所有预设中的自定义字符
+            if self.space_presets:
+                for preset in self.space_presets.values():
+                    chars = preset.get('custom_chars', '')
+                    if chars:
+                        all_custom_chars.append(chars)
+            
+            if not all_custom_chars:
+                # 如果没有预设，提示用户去设置
+                if messagebox.askyesno("提示", "未找到空格规则预设。\n是否前往【空格设置】进行配置？"):
+                    self.show_space_settings()
+                return
+                
+            # 合并所有规则 (简单合并，用|连接)
+            combined_chars = "|".join(all_custom_chars)
+            
+            # 直接应用
+            self.apply_space_rules([], combined_chars)
+               
+        except Exception as e:
+            messagebox.showerror("错误", f"处理失败：{str(e)}")
+    
+    def show_space_rules_dialog(self):
+        """显示空格规则选择对话框"""
+        rules_window = tk.Toplevel(self.root)
+        rules_window.title("添加空格规则")
+        rules_window.geometry("600x700")
+        rules_window.transient(self.root)
+        rules_window.grab_set()
+        rules_window.resizable(False, False)
+        
+        # 居中显示
+        rules_window.update_idletasks()
+        x = (rules_window.winfo_screenwidth() // 2) - (300)
+        y = (rules_window.winfo_screenheight() // 2) - (350)
+        rules_window.geometry(f"600x700+{x}+{y}")
+        
+        # 标题
+        tk.Label(rules_window, text="🔤 选择空格插入规则", 
+                font=("Arial", 14, "bold")).pack(pady=15)
+        
+        # 预设选择框架
+        preset_frame = tk.LabelFrame(rules_window, text="快速选择预设", padx=10, pady=10)
+        preset_frame.pack(fill=tk.X, padx=20, pady=10)
+        
+        preset_var = tk.StringVar()
+        preset_combo = ttk.Combobox(preset_frame, textvariable=preset_var, 
+                                   values=list(self.space_presets.keys()), 
+                                   state="readonly", width=40)
+        preset_combo.pack(side=tk.LEFT, padx=5)
+        
+        def load_preset():
+            preset_name = preset_var.get()
+            if preset_name and preset_name in self.space_presets:
+                preset = self.space_presets[preset_name]
+                # 只加载自定义字符
+                self.custom_chars_var.set(preset.get('custom_chars', ''))
+        
+        tk.Button(preset_frame, text="加载预设", command=load_preset,
+                 bg="#4CAF50", fg="white", padx=15, pady=5).pack(side=tk.LEFT, padx=5)
+        
+        tk.Button(preset_frame, text="管理预设", command=lambda: self.show_preset_manager(rules_window),
+                 bg="#FF9800", fg="white", padx=15, pady=5).pack(side=tk.LEFT, padx=5)
+        
+        tk.Label(rules_window, text="选择要在哪些字符之间插入空格：", 
+                fg="gray", font=("Arial", 10)).pack(pady=5)
+        
+        # 规则选择框架
+        rules_frame = tk.Frame(rules_window, padx=20, pady=10)
+        rules_frame.pack(fill=tk.BOTH, expand=True)
+        
+        # 规则变量
+        self.space_rules = {}
+        
+        # 直接显示自定义规则，不显示预设规则选项
+        # 自定义规则
+        custom_frame = tk.LabelFrame(rules_frame, text="自定义规则", padx=10, pady=8)
+        custom_frame.pack(fill=tk.X, pady=10)
+        
+        tk.Label(custom_frame, text="在以下字符之间插入空格（用逗号分隔，成对出现）：", 
+                font=("Arial", 10)).pack(anchor=tk.W)
+        
+        self.custom_chars_var = tk.StringVar()
+        custom_entry = tk.Entry(custom_frame, textvariable=self.custom_chars_var, 
+                               font=("Arial", 10), width=60)
+        custom_entry.pack(fill=tk.X, pady=5)
+        
+        # 添加更详细的说明
+        examples_text = ("支持格式：\n"
+                        "• 直接输入需要插入空格的两个字，用分隔符分开\n"
+                        "• 例：一时|二时|三时 （会自动变为：一 时、二 时、三 时）\n"
+                        "• 支持分隔符：竖线(|)、逗号(,)、空格")
+        
+        tk.Label(custom_frame, text=examples_text, 
+                font=("Arial", 9), fg="gray", justify=tk.LEFT).pack(anchor=tk.W, pady=(5, 0))
+        
+        # 按钮框架
+        btn_frame = tk.Frame(rules_window, pady=15)
+        btn_frame.pack(fill=tk.X)
+        
+        def apply_rules():
+            # 只检查自定义字符
+            custom_chars = self.custom_chars_var.get().strip()
+            
+            if not custom_chars:
+                messagebox.showwarning("提示", "请输入自定义字符！")
+                return
+            
+            rules_window.destroy()
+            self.apply_space_rules([], custom_chars)
+        
+        def preview_changes():
+            # 预览功能
+            custom_chars = self.custom_chars_var.get().strip()
+            
+            if not custom_chars:
+                messagebox.showwarning("提示", "请输入自定义字符！")
+                return
+            
+            self.preview_space_changes([], custom_chars)
+        
+        def save_as_preset():
+            # 保存当前设置为预设
+            custom_chars = self.custom_chars_var.get().strip()
+            
+            if not custom_chars:
+                messagebox.showwarning("提示", "请输入自定义字符！")
+                return
+            
+            preset_name = simpledialog.askstring("保存预设", "请输入预设名称：")
+            if preset_name:
+                description = simpledialog.askstring("预设描述", "请输入预设描述（可选）：") or ""
+                
+                self.space_presets[preset_name] = {
+                    "rules": [],
+                    "custom_chars": custom_chars,
+                    "description": description
+                }
+                self.save_space_config()
+                
+                # 更新下拉框
+                preset_combo['values'] = list(self.space_presets.keys())
+                messagebox.showinfo("成功", f"预设「{preset_name}」已保存！")
+        
+        tk.Button(btn_frame, text="💾 保存预设", command=save_as_preset,
+                 bg="#9C27B0", fg="white", padx=15, pady=8).pack(side=tk.LEFT, padx=5)
+        
+        tk.Button(btn_frame, text="预览效果", command=preview_changes,
+                 bg="#2196F3", fg="white", padx=15, pady=8).pack(side=tk.LEFT, padx=5)
+        
+        tk.Button(btn_frame, text="应用规则", command=apply_rules,
+                 bg="#4CAF50", fg="white", padx=15, pady=8).pack(side=tk.RIGHT, padx=5)
+        
+        tk.Button(btn_frame, text="取消", command=rules_window.destroy,
+                 bg="#757575", fg="white", padx=15, pady=8).pack(side=tk.RIGHT)
+    
+    def apply_space_rules(self, selected_rules, custom_chars):
+        """应用空格规则到数据"""
+        try:
+            modified_count = 0
+            total_count = len(self.df)
+            
+            for idx in self.df.index:
+                original_text = self.df.loc[idx, 'Label']
+                modified_text = self.process_text_with_space_rules(original_text, selected_rules, custom_chars)
+                
+                if modified_text != original_text:
+                    self.df.loc[idx, 'Label'] = modified_text
+                    modified_count += 1
+            
+            # 刷新显示
+            self.refresh_all()
+            
+            # 显示结果
+            if modified_count > 0:
+                self.show_temp_message(f"✓ 已处理 {modified_count}/{total_count} 个项目")
+                messagebox.showinfo("处理完成", 
+                    f"空格插入完成！\n\n"
+                    f"总项目数：{total_count}\n"
+                    f"已修改：{modified_count}\n"
+                    f"未修改：{total_count - modified_count}")
+            else:
+                messagebox.showinfo("处理完成", "没有项目需要修改。")
+                
+        except Exception as e:
+            messagebox.showerror("错误", f"应用规则失败：{str(e)}")
+    
+    def preview_space_changes(self, selected_rules, custom_chars):
+        """预览空格规则的效果"""
+        try:
+            preview_window = tk.Toplevel(self.root)
+            preview_window.title("预览效果")
+            preview_window.geometry("700x500")
+            preview_window.transient(self.root)
+            
+            # 居中显示
+            preview_window.update_idletasks()
+            x = (preview_window.winfo_screenwidth() // 2) - (350)
+            y = (preview_window.winfo_screenheight() // 2) - (250)
+            preview_window.geometry(f"700x500+{x}+{y}")
+            
+            tk.Label(preview_window, text="🔍 预览效果", 
+                    font=("Arial", 14, "bold")).pack(pady=10)
+            
+            # 创建文本显示区域
+            text_frame = tk.Frame(preview_window)
+            text_frame.pack(fill=tk.BOTH, expand=True, padx=20, pady=10)
+            
+            preview_text = scrolledtext.ScrolledText(text_frame, width=80, height=25, 
+                                                   font=("Microsoft YaHei", 10))
+            preview_text.pack(fill=tk.BOTH, expand=True)
+            
+            # 生成预览内容
+            preview_content = "预览结果（显示前10个会发生变化的项目）：\n"
+            preview_content += "="*60 + "\n\n"
+            
+            changed_count = 0
+            for idx in self.df.index:
+                if changed_count >= 10:
+                    break
+                    
+                original_text = self.df.loc[idx, 'Label']
+                modified_text = self.process_text_with_space_rules(original_text, selected_rules, custom_chars)
+                
+                if modified_text != original_text:
+                    changed_count += 1
+                    preview_content += f"{changed_count}. 原文：{original_text}\n"
+                    preview_content += f"   修改：{modified_text}\n\n"
+            
+            if changed_count == 0:
+                preview_content += "没有项目会发生变化。\n"
+            elif changed_count == 10:
+                total_changes = sum(1 for idx in self.df.index 
+                                  if self.process_text_with_space_rules(self.df.loc[idx, 'Label'], selected_rules, custom_chars) != self.df.loc[idx, 'Label'])
+                preview_content += f"... 还有 {total_changes - 10} 个项目会发生变化\n"
+            
+            preview_text.insert(tk.END, preview_content)
+            preview_text.config(state=tk.DISABLED)
+            
+            # 关闭按钮
+            tk.Button(preview_window, text="关闭", command=preview_window.destroy,
+                     bg="#757575", fg="white", padx=30, pady=8).pack(pady=10)
+            
+        except Exception as e:
+            messagebox.showerror("错误", f"预览失败：{str(e)}")
+    
+    def process_text_with_space_rules(self, text, selected_rules, custom_chars):
+        """根据规则处理文本，插入空格（只处理自定义字符）"""
+        import re
+        
+        result = text
+        
+        # 只应用自定义字符规则
+        if custom_chars:
+            # 新逻辑：用户输入要分割的词（如“一时”），程序将其变为“一 时”
+            # 支持分隔符：| , ， 空格
+            tokens = re.split(r'[|,\s，]+', custom_chars)
+            tokens = [t.strip() for t in tokens if t.strip()]
+            
+            for token in tokens:
+                # 只处理2个字的词
+                if len(token) == 2:
+                    char1 = token[0]
+                    char2 = token[1]
+                    
+                    escaped_char1 = re.escape(char1)
+                    escaped_char2 = re.escape(char2)
+                    
+                    # 创建正则表达式模式
+                    pattern = fr'({escaped_char1})({escaped_char2})'
+                    result = re.sub(pattern, r'\1 \2', result)
+        
+        # 清理多余的空格
+        result = re.sub(r'\s+', ' ', result).strip()
+        
+        return result
+    
+    def show_space_settings(self):
+        """显示空格规则设置管理窗口"""
+        settings_window = tk.Toplevel(self.root)
+        settings_window.title("空格规则设置管理")
+        settings_window.geometry("600x400")
+        settings_window.transient(self.root)
+        settings_window.grab_set()
+        
+        # 居中显示
+        settings_window.update_idletasks()
+        x = (settings_window.winfo_screenwidth() // 2) - (300)
+        y = (settings_window.winfo_screenheight() // 2) - (200)
+        settings_window.geometry(f"600x400+{x}+{y}")
+        
+        tk.Label(settings_window, text="⚙️ 空格规则设置", 
+                font=("Microsoft YaHei", 14, "bold")).pack(pady=15)
+        
+        # 文本框区域
+        tk.Label(settings_window, text="请输入要加空格的文字（用逗号或|分隔）：", 
+                font=("Microsoft YaHei", 10)).pack(anchor=tk.W, padx=20, pady=(10, 5))
+        
+        chars_text = scrolledtext.ScrolledText(settings_window, height=10, 
+                                             font=("Microsoft YaHei", 10))
+        chars_text.pack(fill=tk.BOTH, expand=True, padx=20, pady=5)
+        
+        # 加载现有内容 (从默认预设或所有预设合并)
+        current_chars = []
+        if self.space_presets:
+            for preset in self.space_presets.values():
+                chars = preset.get('custom_chars', '')
+                if chars:
+                    current_chars.append(chars)
+        
+        # 简单去重并合并
+        initial_content = "|".join(current_chars)
+        # 清理一下多余的分隔符
+        import re
+        tokens = re.split(r'[|,\s，]+', initial_content)
+        tokens = [t.strip() for t in tokens if t.strip()]
+        initial_content = "|".join(tokens)
+        
+        chars_text.insert("1.0", initial_content)
+        
+        def save_settings():
+            content = chars_text.get("1.0", tk.END).strip()
+            
+            # 格式化一下
+            tokens = re.split(r'[|,\s，]+', content)
+            tokens = [t.strip() for t in tokens if t.strip()]
+            formatted_content = "|".join(tokens)
+            
+            # 保存为单一的默认预设
+            self.space_presets = {
+                "Default": {
+                    "custom_chars": formatted_content,
+                    "rules": [],
+                    "description": "默认规则"
+                }
+            }
+            self.save_space_config()
+            messagebox.showinfo("成功", "设置已保存")
+            settings_window.destroy()
+        
+        btn_frame = tk.Frame(settings_window, pady=15)
+        btn_frame.pack(fill=tk.X)
+        
+        tk.Button(btn_frame, text="保 存", command=save_settings,
+                 bg="#4CAF50", fg="white", font=("Microsoft YaHei", 10, "bold"),
+                 padx=30, pady=8).pack()
+    
+    def show_preset_manager(self, parent_window):
+        """显示预设管理器（简化版）"""
+        parent_window.withdraw()  # 隐藏父窗口
+        
+        try:
+            self.show_space_settings()
+        finally:
+            parent_window.deiconify()  # 恢复父窗口
+    
+    def edit_preset_dialog(self, preset_name, refresh_callback):
+        """编辑预设对话框"""
+        if preset_name not in self.space_presets:
+            return
+        
+        preset = self.space_presets[preset_name]
+        
+        edit_window = tk.Toplevel(self.root)
+        edit_window.title(f"编辑预设 - {preset_name}")
+        edit_window.geometry("500x400")
+        edit_window.transient(self.root)
+        edit_window.grab_set()
+        
+        # 居中显示
+        edit_window.update_idletasks()
+        x = (edit_window.winfo_screenwidth() // 2) - (250)
+        y = (edit_window.winfo_screenheight() // 2) - (200)
+        edit_window.geometry(f"500x400+{x}+{y}")
+        
+        tk.Label(edit_window, text=f"编辑预设：{preset_name}", 
+                font=("Arial", 12, "bold")).pack(pady=15)
+        
+        # 预设名称
+        name_frame = tk.Frame(edit_window, padx=20)
+        name_frame.pack(fill=tk.X, pady=5)
+        
+        tk.Label(name_frame, text="预设名称：").pack(anchor=tk.W)
+        name_var = tk.StringVar(value=preset_name)
+        name_entry = tk.Entry(name_frame, textvariable=name_var, font=("Arial", 11), width=40)
+        name_entry.pack(fill=tk.X, pady=5)
+        
+        # 描述
+        desc_frame = tk.Frame(edit_window, padx=20)
+        desc_frame.pack(fill=tk.X, pady=5)
+        
+        tk.Label(desc_frame, text="描述：").pack(anchor=tk.W)
+        desc_var = tk.StringVar(value=preset.get('description', ''))
+        desc_entry = tk.Entry(desc_frame, textvariable=desc_var, font=("Arial", 11), width=40)
+        desc_entry.pack(fill=tk.X, pady=5)
+        
+        # 自定义字符
+        custom_frame = tk.Frame(edit_window, padx=20)
+        custom_frame.pack(fill=tk.X, pady=5)
+        
+        tk.Label(custom_frame, text="自定义字符（每组两个字，用|或,分隔）：").pack(anchor=tk.W)
+        custom_var = tk.StringVar(value=preset.get('custom_chars', ''))
+        custom_entry = tk.Entry(custom_frame, textvariable=custom_var, font=("Arial", 11), width=40)
+        custom_entry.pack(fill=tk.X, pady=5)
+        
+        tk.Label(custom_frame, text="例：一时|二时|三时 表示在“一时”变成“一 时”", 
+                font=("Arial", 9), fg="gray").pack(anchor=tk.W)
+        
+        # 按钮
+        btn_frame = tk.Frame(edit_window, pady=15)
+        btn_frame.pack(fill=tk.X)
+        
+        def save_changes():
+            new_name = name_var.get().strip()
+            if not new_name:
+                messagebox.showwarning("提示", "预设名称不能为空！")
+                return
+            
+            # 如果名称改变了，删除旧的
+            if new_name != preset_name and new_name in self.space_presets:
+                if not messagebox.askyesno("预设已存在", f"预设「{new_name}」已存在，是否覆盖？"):
+                    return
+            
+            if new_name != preset_name:
+                del self.space_presets[preset_name]
+            
+            # 保存新的预设（只保存自定义字符）
+            self.space_presets[new_name] = {
+                "rules": [],
+                "custom_chars": custom_var.get().strip(),
+                "description": desc_var.get().strip()
+            }
+            
+            self.save_space_config()
+            refresh_callback()
+            edit_window.destroy()
+            messagebox.showinfo("成功", f"预设「{new_name}」已保存！")
+        
+        tk.Button(btn_frame, text="保存", command=save_changes,
+                 bg="#4CAF50", fg="white", padx=20, pady=8).pack(side=tk.RIGHT, padx=5)
+        
+        tk.Button(btn_frame, text="取消", command=edit_window.destroy,
+                 bg="#757575", fg="white", padx=20, pady=8).pack(side=tk.RIGHT)
 
     def load_from_text(self):
         """从文本加载数据"""
@@ -3126,6 +3605,46 @@ class OCRApp:
         except Exception as e:
             print(f"⚠️ 保存字号配置失败: {e}")
     
+    def load_space_config(self):
+        """加载空格规则配置"""
+        try:
+            config = self.store.get('space_presets', {})
+            if config:
+                self.space_presets = config
+                
+                # 自动修复旧格式预设
+                if "数字编号" in self.space_presets:
+                    chars = self.space_presets["数字编号"].get("custom_chars", "")
+                    if "一,号" in chars:
+                        self.space_presets["数字编号"]["custom_chars"] = "一号|二号|三号|四号|五号|六号|七号|八号|九号|十号"
+                        self.space_presets["数字编号"]["description"] = "数字编号中间加空格（一号→一 号）"
+                        self.save_space_config()
+                        print("✓ 已自动修复旧格式预设：数字编号")
+
+                print(f"✓ 已加载空格规则配置: {len(self.space_presets)} 个预设")
+            else:
+                # 创建默认预设（只包含自定义字符预设）
+                self.space_presets = {
+                    "数字编号": {
+                        "rules": [],
+                        "custom_chars": "一号|二号|三号|四号|五号|六号|七号|八号|九号|十号",
+                        "description": "数字编号中间加空格（一号→一 号）"
+                    }
+                }
+                self.save_space_config()
+                print("✓ 创建默认空格规则配置")
+        except Exception as e:
+            print(f"⚠️ 加载空格规则配置失败: {e}")
+            self.space_presets = {}
+    
+    def save_space_config(self):
+        """保存空格规则配置"""
+        try:
+            self.store.set('space_presets', self.space_presets)
+            print(f"✓ 空格规则配置已保存: {len(self.space_presets)} 个预设")
+        except Exception as e:
+            print(f"⚠️ 保存空格规则配置失败: {e}")
+    
     def update_size_hint_display(self):
         """更新界面上的尺寸提示信息"""
         try:
@@ -3472,6 +3991,41 @@ class OCRApp:
                 history_window.destroy()
                 messagebox.showinfo("成功", "历史记录已清空")
         
+        def copy_selected_text():
+            """复制选定记录的纯文字内容"""
+            selection = tree.selection()
+            if not selection:
+                messagebox.showwarning("提示", "请先选择一条历史记录")
+                return
+            
+            try:
+                item_values = tree.item(selection[0])['values']
+                timestamp = item_values[0]
+                
+                # 查找对应的历史记录
+                history_item = next((item for item in self.history_data if item['timestamp'] == timestamp), None)
+                
+                if not history_item:
+                    return
+
+                # 提取纯文字内容
+                pure_content = []
+                for file_info in history_item['files']:
+                    for line in file_info['content']:
+                        if line.strip():
+                            pure_content.append(line.strip())
+                
+                final_text = "\n".join(pure_content)
+                
+                if final_text:
+                    self.root.clipboard_clear()
+                    self.root.clipboard_append(final_text)
+                else:
+                    messagebox.showwarning("提示", "该记录没有可复制的文字内容")
+                    
+            except Exception as e:
+                messagebox.showerror("错误", f"复制失败：{str(e)}")
+        
         def set_history_limit():
             """设置历史记录数量限制"""
             limit_window = self.create_popup_window(history_window, "历史记录数量设置", "history_limit_settings", 450, 300)
@@ -3553,6 +4107,9 @@ class OCRApp:
                      bg="#757575", fg="white", padx=25, pady=8).pack(side=tk.LEFT, padx=5)
             
             limit_entry.bind("<Return>", lambda e: save_limit())
+        
+        tk.Button(btn_frame, text="📋 复制文字", command=copy_selected_text,
+                 bg="#4CAF50", fg="white", padx=20, pady=8).pack(side=tk.LEFT, padx=5)
         
         tk.Button(btn_frame, text="数量设置", command=set_history_limit,
                  bg="#2196F3", fg="white", padx=20, pady=8).pack(side=tk.LEFT, padx=5)
@@ -3754,11 +4311,17 @@ class OCRApp:
         btn_frame = tk.Frame(detail_window)
         btn_frame.pack(pady=10)
         
-        def copy_content():
-            all_text = text_widget.get(1.0, tk.END)
-            self.root.clipboard_clear()
-            self.root.clipboard_append(all_text)
-            messagebox.showinfo("成功", "内容已复制到剪贴板")
+
+        
+        def copy_all_content():
+            """复制完整内容（包括文件信息和分隔线）"""
+            try:
+                all_text = text_widget.get(1.0, tk.END)
+                self.root.clipboard_clear()
+                self.root.clipboard_append(all_text)
+                messagebox.showinfo("成功", "完整内容已复制到剪贴板")
+            except Exception as e:
+                messagebox.showerror("错误", f"复制失败：{str(e)}")
         
         def export_history_item():
             """导出历史记录到文件"""
@@ -3791,8 +4354,10 @@ class OCRApp:
                 except Exception as e:
                     messagebox.showerror("错误", f"导出失败：{str(e)}")
         
-        tk.Button(btn_frame, text="复制内容", command=copy_content,
-                 bg="#2196F3", fg="white", padx=20, pady=8).pack(side=tk.LEFT, padx=5)
+
+        tk.Button(btn_frame, text="📄 复制全部", command=copy_all_content,
+                 bg="#607D8B", fg="white", padx=15, pady=8,
+                 font=("Arial", 10)).pack(side=tk.LEFT, padx=3)
         
         tk.Button(btn_frame, text="导出文件", command=export_history_item,
                  bg="#4CAF50", fg="white", padx=20, pady=8).pack(side=tk.LEFT, padx=5)
