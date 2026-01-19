@@ -2723,157 +2723,8 @@ class OCRApp:
             self.root.after(0, lambda: self.select_btn.config(state=tk.NORMAL))
 
     
-    def perform_quick_ocr(self):
-        """执行快速 OCR 识别"""
-        if not self.image_paths:
-            messagebox.showwarning("警告", "请先选择图片文件！")
-            return
-        
-        if not API_KEY or not SECRET_KEY:
-            messagebox.showerror("错误", "请先在 .env 文件中配置 API_KEY 和 SECRET_KEY！")
-            return
-        
-        self.ocr_btn.config(state=tk.DISABLED)
-        self.quick_ocr_btn.config(state=tk.DISABLED)
-        self.general_ocr_btn.config(state=tk.DISABLED)
-        self.select_btn.config(state=tk.DISABLED)
-        
-        thread = threading.Thread(target=self._perform_quick_ocr_thread, daemon=True)
-        thread.start()
+
     
-    def _perform_quick_ocr_thread(self):
-        """快速OCR识别线程"""
-        try:
-            self.root.after(0, lambda: self.result_text.delete(1.0, tk.END))
-            self.all_results = []
-            
-            total = len(self.image_paths)
-            
-            for idx, image_path in enumerate(self.image_paths, 1):
-                self.root.after(0, lambda i=idx, p=image_path: 
-                    self.progress_label.config(text=f"快速识别中: {i}/{total} - {os.path.basename(p)}"))
-                
-                self.root.after(0, lambda: self.result_text.insert(tk.END, f"\n{'='*80}\n"))
-                self.root.after(0, lambda i=idx, p=image_path: 
-                    self.result_text.insert(tk.END, f"文件 {i}/{total}: {os.path.basename(p)}\n"))
-                self.root.after(0, lambda: self.result_text.insert(tk.END, f"{'='*80}\n"))
-                
-                try:
-                    img = Image.open(image_path)
-                    width, height = img.size
-                    
-                    self.root.after(0, lambda w=width, h=height: 
-                        self.result_text.insert(tk.END, f"图片尺寸: 宽{w} x 高{h}\n"))
-                    
-                    # 检查是否符合快速识别要求
-                    width_in_basic = self.size_limits["basic_min_width"] <= width <= self.size_limits["basic_max_width"]
-                    height_in_basic = self.size_limits["basic_min_height"] <= height <= self.size_limits["basic_max_height"]
-                    meets_basic = width_in_basic and height_in_basic
-                    
-                    if not meets_basic:
-                        bas_w_range = f"{self.size_limits['basic_min_width']}~{self.size_limits['basic_max_width']}"
-                        bas_h_range = f"{self.size_limits['basic_min_height']}~{self.size_limits['basic_max_height']}"
-                        self.root.after(0, lambda w=width, h=height, wr=bas_w_range, hr=bas_h_range: 
-                            self.result_text.insert(tk.END, 
-                                f"⚠️ 跳过：图片尺寸不符合要求\n"
-                                f"   当前尺寸: 宽{w} x 高{h}\n"
-                                f"   要求：宽度({wr})且高度({hr})都要在范围内\n"
-                                f"   建议使用「高精度识别」按钮\n"))
-                        
-                        self.all_results.append({
-                            'file': os.path.basename(image_path),
-                            'path': image_path,
-                            'lines': [],
-                            'count': 0,
-                            'skipped': True,
-                            'reason': f'图片尺寸不符合要求（宽{width} x 高{height}）'
-                        })
-                        
-                        self.root.after(0, lambda: self.result_text.see(tk.END))
-                        continue
-                    
-                except Exception as e:
-                    self.root.after(0, lambda err=str(e): 
-                        self.result_text.insert(tk.END, f"⚠️ 无法读取图片尺寸: {err}\n"))
-                
-                result = ocr_image_basic(image_path)
-                
-                if "words_result" in result:
-                    text_only_lines = []
-                    for item in result["words_result"]:
-                        words = item["words"]
-                        text_only_lines.append(words)
-                    
-                    recognized_text = "\n".join(text_only_lines)
-                    self.root.after(0, lambda t=recognized_text: 
-                        self.result_text.insert(tk.END, t + "\n"))
-                    
-                    self.all_results.append({
-                        'file': os.path.basename(image_path),
-                        'path': image_path,
-                        'lines': text_only_lines,
-                        'count': len(text_only_lines)
-                    })
-                    
-                    self.root.after(0, lambda c=len(text_only_lines): 
-                        self.result_text.insert(tk.END, f"\n✓ 识别成功：{c} 行文字\n"))
-                else:
-                    self.root.after(0, lambda r=result: 
-                        self.result_text.insert(tk.END, f"✗ 识别失败：{r}\n"))
-                    self.all_results.append({
-                        'file': os.path.basename(image_path),
-                        'path': image_path,
-                        'lines': [],
-                        'count': 0,
-                        'error': str(result)
-                    })
-                
-                self.root.after(0, lambda: self.result_text.see(tk.END))
-                
-                if idx < total:
-                    import time
-                    time.sleep(0.5)
-            
-            success_count = sum(1 for r in self.all_results if r['count'] > 0)
-            skipped_count = sum(1 for r in self.all_results if r.get('skipped', False))
-            failed_count = total - success_count - skipped_count
-            total_lines = sum(r['count'] for r in self.all_results)
-            
-            actual_processed = total - skipped_count
-            if actual_processed > 0:
-                self.record_ocr('basic', success_count, failed_count, total_lines)
-                # 添加到历史记录（在主线程中执行）
-                results_copy = [r.copy() for r in self.all_results]
-                self.root.after(0, lambda: self.add_to_history('快速识别', results_copy))
-            
-            self.root.after(0, lambda: self.progress_label.config(text=f"✓ 完成！共处理 {total} 个文件"))
-            self.root.after(0, lambda: self.export_btn.config(state=tk.NORMAL))
-            self.root.after(0, lambda: self.copy_btn.config(state=tk.NORMAL))
-            self.root.after(0, lambda: self.add_zeros_btn.config(state=tk.NORMAL))
-            self.root.after(0, lambda: self.ocr_btn.config(state=tk.NORMAL))
-            self.root.after(0, lambda: self.quick_ocr_btn.config(state=tk.NORMAL))
-            self.root.after(0, lambda: self.general_ocr_btn.config(state=tk.NORMAL))
-            self.root.after(0, lambda: self.select_btn.config(state=tk.NORMAL))
-            
-            status_msg = f"✓ 快速识别完成！总:{total} 成功:{success_count}"
-            if skipped_count > 0:
-                status_msg += f" 跳过:{skipped_count}"
-            if failed_count > 0:
-                status_msg += f" 失败:{failed_count}"
-            status_msg += f" | 文字行数:{total_lines}"
-            if skipped_count > 0:
-                status_msg += " | 💡跳过的图片可用高精度识别"
-            
-            self.root.after(0, lambda m=status_msg: self.progress_label.config(text=m))
-        
-        except Exception as e:
-            self.root.after(0, lambda: self.result_text.insert(tk.END, f"\n发生错误：{str(e)}\n"))
-            self.root.after(0, lambda: messagebox.showerror("错误", f"发生错误：{str(e)}"))
-            self.root.after(0, lambda: self.progress_label.config(text="✗ 处理失败"))
-            self.root.after(0, lambda: self.ocr_btn.config(state=tk.NORMAL))
-            self.root.after(0, lambda: self.quick_ocr_btn.config(state=tk.NORMAL))
-            self.root.after(0, lambda: self.general_ocr_btn.config(state=tk.NORMAL))
-            self.root.after(0, lambda: self.select_btn.config(state=tk.NORMAL))
 
     def perform_general_ocr(self):
         """执行通用 OCR 识别"""
@@ -3037,8 +2888,8 @@ class OCRApp:
             messagebox.showwarning("警告", "请先选择图片文件！")
             return
         
-        if not API_KEY or not SECRET_KEY:
-            messagebox.showerror("错误", "请先在 .env 文件中配置 API_KEY 和 SECRET_KEY！")
+        if not API_KEY_BASIC or not SECRET_KEY_BASIC:
+            messagebox.showerror("错误", "请先在 .env 文件中配置 API_KEY_BASIC 和 SECRET_KEY_BASIC！")
             return
         
         self.ocr_btn.config(state=tk.DISABLED)
