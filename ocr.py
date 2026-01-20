@@ -394,6 +394,10 @@ class OCRApp:
         self.space_config_file = Path(__file__).parent / 'space_rules_config.json'
         self.space_presets = {}  # 用户保存的空格规则预设
         self.load_space_config()  # 加载空格规则配置
+        
+        # 字体样式配置
+        self.font_style_rules = {}  # 字体样式规则：{前缀: {样式配置}}
+        self.load_font_style_config()  # 加载字体样式配置
         self.df = pd.DataFrame(columns=['Label', 'Y', 'X'])
         self.thresholds = []
         self.category_list = []
@@ -601,6 +605,7 @@ class OCRApp:
         tk.Button(t_bar, text="🔤 加空格", command=self.add_spaces_to_tree_items, bg="#e3f2fd").pack(side=tk.LEFT, padx=2)
         tk.Button(t_bar, text="🚩 标记/取消", command=self.toggle_mark_selected, bg="#fffde7").pack(side=tk.LEFT, padx=2)
         tk.Button(t_bar, text="⚙️ 空格设置", command=self.show_space_settings, bg="#f3e5f5").pack(side=tk.LEFT, padx=2)
+        tk.Button(t_bar, text="🎨 字体样式", command=self.show_font_style_settings, bg="#e8f5e8").pack(side=tk.LEFT, padx=2)
 
         self.tree = ttk.Treeview(self.tab_tree, columns=('Label', 'Status', 'Index'), show='tree headings',
                                  displaycolumns=('Label', 'Status'))
@@ -829,6 +834,10 @@ class OCRApp:
         """分类并显示"""
         for i in self.tree.get_children(): self.tree.delete(i)
         if self.df.empty: return
+        
+        # 配置字体样式标签
+        self.configure_font_style_tags()
+        
         cat_idx = set()
         for i, cat in enumerate(self.category_list):
             if not cat['indices']: continue
@@ -837,8 +846,24 @@ class OCRApp:
             pid = self.tree.insert("", "end", text=f"📂 {cat['name']}", open=True, tags=(tag,))
             for idx in sorted(list(cat['indices'])):
                 m = idx in self.marked_indices
-                self.tree.insert(pid, "end", values=(self.df.loc[idx, 'Label'], "✅ 标记" if m else "", idx),
-                                 tags=('marked' if m else ''))
+                label_text = self.df.loc[idx, 'Label']
+                
+                # 检查是否需要应用字体样式
+                item_tags = []
+                font_style_tag = self.get_font_style_tag(label_text)
+                
+                if m and font_style_tag:
+                    # 同时有标记和字体样式，使用组合标签
+                    item_tags.append(f"marked_{font_style_tag}")
+                elif m:
+                    # 只有标记
+                    item_tags.append('marked')
+                elif font_style_tag:
+                    # 只有字体样式
+                    item_tags.append(font_style_tag)
+                
+                self.tree.insert(pid, "end", values=(label_text, "✅ 标记" if m else "", idx),
+                                 tags=tuple(item_tags))
                 cat_idx.add(idx)
         rem_df = self.df.drop(list(cat_idx))
         if not rem_df.empty:
@@ -857,9 +882,58 @@ class OCRApp:
                 pid = self.tree.insert("", "end", text=f"📂 {self.custom_cat_names.get(name, name)}", open=True)
                 for r_idx, r in sub.iterrows():
                     m = r_idx in self.marked_indices
-                    self.tree.insert(pid, "end", values=(r['Label'], "✅ 标记" if m else "", r_idx),
-                                     tags=('marked' if m else ''))
+                    label_text = r['Label']
+                    
+                    # 检查是否需要应用字体样式
+                    item_tags = []
+                    font_style_tag = self.get_font_style_tag(label_text)
+                    
+                    if m and font_style_tag:
+                        # 同时有标记和字体样式，使用组合标签
+                        item_tags.append(f"marked_{font_style_tag}")
+                    elif m:
+                        # 只有标记
+                        item_tags.append('marked')
+                    elif font_style_tag:
+                        # 只有字体样式
+                        item_tags.append(font_style_tag)
+                    
+                    self.tree.insert(pid, "end", values=(label_text, "✅ 标记" if m else "", r_idx),
+                                     tags=tuple(item_tags))
         self.generate_report_from_tree()
+    
+    def configure_font_style_tags(self):
+        """配置字体样式标签"""
+        for prefix, style in self.font_style_rules.items():
+            tag_name = f"font_style_{prefix}"
+            
+            # 构建字体配置
+            font_config = []
+            font_config.append(style.get('font_family', 'Microsoft YaHei'))
+            font_config.append(style.get('font_size', self.current_font_size))
+            
+            font_weight = style.get('font_weight', 'normal')
+            if font_weight == 'bold':
+                font_config.append('bold')
+            
+            # 配置标签 - 字体样式标签优先级更高，会覆盖标记的字体和颜色设置
+            self.tree.tag_configure(tag_name, 
+                                   foreground=style.get('color', '#000000'),
+                                   font=tuple(font_config))
+            
+            # 为标记状态的字体样式项目创建特殊标签（保持字体样式，但有标记背景）
+            marked_tag_name = f"marked_{tag_name}"
+            self.tree.tag_configure(marked_tag_name,
+                                   foreground=style.get('color', '#000000'),
+                                   font=tuple(font_config),
+                                   background='#FFFACD')  # 标记背景色
+    
+    def get_font_style_tag(self, text):
+        """获取文本对应的字体样式标签"""
+        for prefix in self.font_style_rules:
+            if text.lower().startswith(prefix.lower()):
+                return f"font_style_{prefix}"
+        return None
 
     def generate_report_from_tree(self):
         """从树生成报告"""
@@ -903,8 +977,8 @@ class OCRApp:
         ttk.Style().configure("Treeview", font=("Microsoft YaHei", s), rowheight=int(s * 2.5))
         ttk.Style().configure("Treeview.Heading", font=("Microsoft YaHei", s, "bold"))
         
-        # 更新特定标签样式
-        self.tree.tag_configure('marked', foreground='red', font=("Microsoft YaHei", s, "bold"))
+        # 更新特定标签样式 - 标记状态只改变背景色，不改变字体和颜色
+        self.tree.tag_configure('marked', background='#FFFACD')  # 浅黄色背景表示标记状态
         self.report_text.configure(font=("Microsoft YaHei", s))
 
     def on_right_click(self, event):
@@ -3314,6 +3388,17 @@ class OCRApp:
         
         popup.protocol("WM_DELETE_WINDOW", on_popup_close)
         
+        # 绑定窗口配置改变事件，实时保存配置
+        def on_configure(event):
+            # 只处理窗口本身的配置改变事件，忽略子控件的事件
+            if event.widget == popup:
+                # 延迟保存，避免频繁保存
+                if hasattr(popup, '_save_timer'):
+                    popup.after_cancel(popup._save_timer)
+                popup._save_timer = popup.after(500, lambda: self.save_popup_config(window_name, popup))
+        
+        popup.bind('<Configure>', on_configure)
+        
         return popup
     
     def on_closing(self):
@@ -3495,6 +3580,82 @@ class OCRApp:
             print(f"✓ 空格规则配置已保存: {len(self.space_presets)} 个预设")
         except Exception as e:
             print(f"⚠️ 保存空格规则配置失败: {e}")
+    
+    def load_font_style_config(self):
+        """加载字体样式配置"""
+        try:
+            config = self.store.get('font_style_rules', {})
+            if config:
+                self.font_style_rules = config
+                print(f"✓ 已加载字体样式配置: {len(self.font_style_rules)} 个规则")
+            else:
+                # 创建默认字体样式规则
+                self.font_style_rules = {
+                    "a": {
+                        "font_family": "Arial",
+                        "font_size": 12,
+                        "font_weight": "bold",
+                        "color": "#FF0000",
+                        "description": "以'a'开头的项目使用红色粗体"
+                    }
+                }
+                self.save_font_style_config()
+                print("✓ 创建默认字体样式配置")
+        except Exception as e:
+            print(f"⚠️ 加载字体样式配置失败: {e}")
+            self.font_style_rules = {}
+    
+    def save_font_style_config(self):
+        """保存字体样式配置"""
+        try:
+            self.store.set('font_style_rules', self.font_style_rules)
+            print(f"✓ 字体样式配置已保存: {len(self.font_style_rules)} 个规则")
+        except Exception as e:
+            print(f"⚠️ 保存字体样式配置失败: {e}")
+    
+    def get_system_fonts(self):
+        """获取系统可用字体列表"""
+        try:
+            import tkinter.font as tkFont
+            
+            # 获取所有字体族
+            font_families = list(tkFont.families())
+            
+            # 过滤和排序字体
+            filtered_fonts = []
+            
+            # 优先显示常用中文字体
+            priority_fonts = [
+                "Microsoft YaHei", "微软雅黑",
+                "SimHei", "黑体", 
+                "SimSun", "宋体",
+                "KaiTi", "楷体",
+                "FangSong", "仿宋",
+                "Arial", "Times New Roman", "Courier New",
+                "Calibri", "Verdana", "Tahoma"
+            ]
+            
+            # 先添加优先字体（如果系统中存在）
+            for font in priority_fonts:
+                if font in font_families:
+                    filtered_fonts.append(font)
+                    font_families.remove(font)
+            
+            # 添加分隔符
+            if filtered_fonts and font_families:
+                filtered_fonts.append("--- 其他字体 ---")
+            
+            # 添加剩余字体，按字母顺序排序
+            remaining_fonts = sorted([f for f in font_families if not f.startswith('@')])  # 过滤掉@开头的字体
+            filtered_fonts.extend(remaining_fonts)
+            
+            print(f"✓ 已加载 {len(filtered_fonts)} 个系统字体")
+            return filtered_fonts
+            
+        except Exception as e:
+            print(f"⚠️ 获取系统字体失败: {e}")
+            # 如果获取失败，返回默认字体列表
+            return ["Microsoft YaHei", "Arial", "SimHei", "Times New Roman", "Courier New"]
     
     def update_size_hint_display(self):
         """更新界面上的尺寸提示信息"""
@@ -5387,6 +5548,259 @@ class OCRApp:
         
         except Exception as e:
             messagebox.showerror("错误", f"加载图片失败：{str(e)}")
+    
+    def show_font_style_settings(self):
+        """显示字体样式设置窗口"""
+        settings_window = self.create_popup_window(self.root, "字体样式设置", "font_style_settings", 700, 600)
+        
+        tk.Label(settings_window, text="🎨 字体样式设置", 
+                font=("Arial", 14, "bold")).pack(pady=15)
+        
+        tk.Label(settings_window, text="为以指定字符开头的项目设置特殊字体样式", 
+                fg="gray", font=("Arial", 10)).pack(pady=5)
+        
+        # 规则列表框架
+        list_frame = tk.LabelFrame(settings_window, text="字体样式规则", padx=10, pady=10)
+        list_frame.pack(fill=tk.BOTH, expand=True, padx=20, pady=10)
+        
+        # 创建列表框和滚动条
+        list_container = tk.Frame(list_frame)
+        list_container.pack(fill=tk.BOTH, expand=True)
+        
+        scrollbar = tk.Scrollbar(list_container)
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        
+        rules_listbox = tk.Listbox(list_container, yscrollcommand=scrollbar.set,
+                                  font=("Arial", 11), height=15)
+        rules_listbox.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        scrollbar.config(command=rules_listbox.yview)
+        
+        def refresh_rules_list():
+            rules_listbox.delete(0, tk.END)
+            for prefix, style in self.font_style_rules.items():
+                font_info = f"{style.get('font_family', 'Microsoft YaHei')} {style.get('font_size', 12)}"
+                if style.get('font_weight') == 'bold':
+                    font_info += " 粗体"
+                color_info = style.get('color', '#000000')
+                desc = style.get('description', '')
+                
+                display_text = f"'{prefix}' → {font_info} {color_info}"
+                if desc:
+                    display_text += f" ({desc})"
+                
+                rules_listbox.insert(tk.END, display_text)
+        
+        refresh_rules_list()
+        
+        # 按钮框架
+        btn_frame = tk.Frame(settings_window, pady=15)
+        btn_frame.pack(fill=tk.X)
+        
+        def add_rule():
+            self.show_font_style_editor(None, refresh_rules_list)
+        
+        def edit_rule():
+            selection = rules_listbox.curselection()
+            if not selection:
+                messagebox.showwarning("提示", "请先选择一个规则！")
+                return
+            
+            prefixes = list(self.font_style_rules.keys())
+            prefix = prefixes[selection[0]]
+            self.show_font_style_editor(prefix, refresh_rules_list)
+        
+        def delete_rule():
+            selection = rules_listbox.curselection()
+            if not selection:
+                messagebox.showwarning("提示", "请先选择一个规则！")
+                return
+            
+            prefixes = list(self.font_style_rules.keys())
+            prefix = prefixes[selection[0]]
+            
+            if messagebox.askyesno("确认删除", f"确定要删除规则「{prefix}」吗？"):
+                del self.font_style_rules[prefix]
+                self.save_font_style_config()
+                refresh_rules_list()
+                # 刷新显示
+                self.refresh_all()
+                messagebox.showinfo("成功", f"规则「{prefix}」已删除！")
+        
+        def apply_styles():
+            """应用字体样式到当前显示"""
+            self.refresh_all()
+            messagebox.showinfo("成功", "字体样式已应用到分类目录树！")
+        
+        # 第一行按钮
+        btn_row1 = tk.Frame(btn_frame)
+        btn_row1.pack(fill=tk.X, pady=5)
+        
+        tk.Button(btn_row1, text="➕ 添加规则", command=add_rule,
+                 bg="#4CAF50", fg="white", padx=15, pady=8).pack(side=tk.LEFT, padx=5)
+        
+        tk.Button(btn_row1, text="✏️ 编辑规则", command=edit_rule,
+                 bg="#2196F3", fg="white", padx=15, pady=8).pack(side=tk.LEFT, padx=5)
+        
+        tk.Button(btn_row1, text="❌ 删除规则", command=delete_rule,
+                 bg="#F44336", fg="white", padx=15, pady=8).pack(side=tk.LEFT, padx=5)
+        
+        tk.Button(btn_row1, text="🎨 应用样式", command=apply_styles,
+                 bg="#FF9800", fg="white", padx=15, pady=8).pack(side=tk.RIGHT, padx=5)
+        
+        # 第二行按钮
+        btn_row2 = tk.Frame(btn_frame)
+        btn_row2.pack(fill=tk.X, pady=5)
+        
+        tk.Button(btn_row2, text="关闭", command=settings_window.destroy,
+                 bg="#757575", fg="white", padx=20, pady=8).pack(side=tk.RIGHT, padx=5)
+    
+    def show_font_style_editor(self, prefix, refresh_callback):
+        """显示字体样式编辑器"""
+        is_edit = prefix is not None
+        title = f"编辑字体样式 - {prefix}" if is_edit else "添加字体样式规则"
+        window_name = f"font_style_editor_{prefix}" if is_edit else "font_style_editor_new"
+        
+        editor_window = self.create_popup_window(self.root, title, window_name, 500, 450)
+        
+        tk.Label(editor_window, text=title, 
+                font=("Arial", 12, "bold")).pack(pady=15)
+        
+        # 前缀设置
+        prefix_frame = tk.Frame(editor_window, padx=20)
+        prefix_frame.pack(fill=tk.X, pady=5)
+        
+        tk.Label(prefix_frame, text="前缀字符：").pack(anchor=tk.W)
+        prefix_var = tk.StringVar(value=prefix if is_edit else "")
+        prefix_entry = tk.Entry(prefix_frame, textvariable=prefix_var, font=("Arial", 11), width=40)
+        prefix_entry.pack(fill=tk.X, pady=5)
+        tk.Label(prefix_frame, text="例：输入'a'表示以'a'开头的项目", 
+                font=("Arial", 9), fg="gray").pack(anchor=tk.W)
+        
+        # 字体设置
+        font_frame = tk.LabelFrame(editor_window, text="字体设置", padx=10, pady=10)
+        font_frame.pack(fill=tk.X, padx=20, pady=10)
+        
+        # 字体族 - 获取系统所有可用字体
+        tk.Label(font_frame, text="字体：").grid(row=0, column=0, sticky=tk.W, pady=5)
+        font_family_var = tk.StringVar()
+        
+        # 获取系统字体列表
+        available_fonts = self.get_system_fonts()
+        
+        font_family_combo = ttk.Combobox(font_frame, textvariable=font_family_var,
+                                        values=available_fonts,
+                                        state="readonly", width=25)
+        font_family_combo.grid(row=0, column=1, sticky=tk.W, padx=10, pady=5)
+        
+        # 绑定选择事件，防止选择分隔符
+        def on_font_select(event):
+            selected = font_family_var.get()
+            if selected.startswith("---"):
+                # 如果选择了分隔符，恢复到之前的选择
+                font_family_combo.set(font_family_var.get() if font_family_var.get() not in available_fonts[:10] else "Microsoft YaHei")
+        
+        font_family_combo.bind("<<ComboboxSelected>>", on_font_select)
+        
+        # 字体大小
+        tk.Label(font_frame, text="大小：").grid(row=1, column=0, sticky=tk.W, pady=5)
+        font_size_var = tk.StringVar()
+        font_size_combo = ttk.Combobox(font_frame, textvariable=font_size_var,
+                                      values=[str(i) for i in range(8, 25)],
+                                      state="readonly", width=10)
+        font_size_combo.grid(row=1, column=1, sticky=tk.W, padx=10, pady=5)
+        
+        # 字体粗细
+        tk.Label(font_frame, text="粗细：").grid(row=2, column=0, sticky=tk.W, pady=5)
+        font_weight_var = tk.StringVar()
+        font_weight_combo = ttk.Combobox(font_frame, textvariable=font_weight_var,
+                                        values=["normal", "bold"],
+                                        state="readonly", width=15)
+        font_weight_combo.grid(row=2, column=1, sticky=tk.W, padx=10, pady=5)
+        
+        # 颜色设置
+        color_frame = tk.LabelFrame(editor_window, text="颜色设置", padx=10, pady=10)
+        color_frame.pack(fill=tk.X, padx=20, pady=10)
+        
+        tk.Label(color_frame, text="文字颜色：").pack(anchor=tk.W)
+        
+        color_var = tk.StringVar()
+        color_entry = tk.Entry(color_frame, textvariable=color_var, font=("Arial", 11), width=15)
+        color_entry.pack(side=tk.LEFT, pady=5)
+        
+        # 颜色选择按钮
+        def choose_color():
+            from tkinter import colorchooser
+            color = colorchooser.askcolor(title="选择颜色")
+            if color[1]:  # 如果用户选择了颜色
+                color_var.set(color[1])
+        
+        tk.Button(color_frame, text="选择颜色", command=choose_color,
+                 bg="#9C27B0", fg="white", padx=10, pady=5).pack(side=tk.LEFT, padx=10)
+        
+        # 描述
+        desc_frame = tk.Frame(editor_window, padx=20)
+        desc_frame.pack(fill=tk.X, pady=5)
+        
+        tk.Label(desc_frame, text="描述（可选）：").pack(anchor=tk.W)
+        desc_var = tk.StringVar()
+        desc_entry = tk.Entry(desc_frame, textvariable=desc_var, font=("Arial", 11), width=40)
+        desc_entry.pack(fill=tk.X, pady=5)
+        
+        # 如果是编辑模式，加载现有值
+        if is_edit and prefix in self.font_style_rules:
+            style = self.font_style_rules[prefix]
+            font_family_var.set(style.get('font_family', 'Microsoft YaHei'))
+            font_size_var.set(str(style.get('font_size', 12)))
+            font_weight_var.set(style.get('font_weight', 'normal'))
+            color_var.set(style.get('color', '#000000'))
+            desc_var.set(style.get('description', ''))
+        else:
+            # 设置默认值
+            font_family_var.set('Microsoft YaHei')
+            font_size_var.set('12')
+            font_weight_var.set('normal')
+            color_var.set('#FF0000')
+        
+        # 按钮
+        btn_frame = tk.Frame(editor_window, pady=15)
+        btn_frame.pack(fill=tk.X)
+        
+        def save_style():
+            new_prefix = prefix_var.get().strip()
+            if not new_prefix:
+                messagebox.showwarning("提示", "前缀字符不能为空！")
+                return
+            
+            # 如果是编辑模式且前缀改变了，删除旧的
+            if is_edit and new_prefix != prefix and new_prefix in self.font_style_rules:
+                if not messagebox.askyesno("规则已存在", f"规则「{new_prefix}」已存在，是否覆盖？"):
+                    return
+            
+            if is_edit and new_prefix != prefix:
+                del self.font_style_rules[prefix]
+            
+            # 保存新的规则
+            self.font_style_rules[new_prefix] = {
+                "font_family": font_family_var.get(),
+                "font_size": int(font_size_var.get()),
+                "font_weight": font_weight_var.get(),
+                "color": color_var.get(),
+                "description": desc_var.get().strip()
+            }
+            
+            self.save_font_style_config()
+            refresh_callback()
+            editor_window.destroy()
+            
+            # 刷新显示
+            self.refresh_all()
+            messagebox.showinfo("成功", f"字体样式规则「{new_prefix}」已保存！")
+        
+        tk.Button(btn_frame, text="保存", command=save_style,
+                 bg="#4CAF50", fg="white", padx=20, pady=8).pack(side=tk.RIGHT, padx=5)
+        
+        tk.Button(btn_frame, text="取消", command=editor_window.destroy,
+                 bg="#757575", fg="white", padx=20, pady=8).pack(side=tk.RIGHT)
 
 
 if __name__ == '__main__':
