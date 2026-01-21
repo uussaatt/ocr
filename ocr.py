@@ -398,7 +398,7 @@ class OCRApp:
         # 字体样式配置
         self.font_style_rules = {}  # 字体样式规则：{前缀: {样式配置}}
         self.load_font_style_config()  # 加载字体样式配置
-        self.df = pd.DataFrame(columns=['Label', 'Y', 'X'])
+        self.df = pd.DataFrame(columns=['Label', 'Y', 'X', 'Group', 'Order'])
         self.thresholds = []
         self.category_list = []
         self.marked_indices = set()
@@ -603,35 +603,61 @@ class OCRApp:
         tk.Button(t_bar, text="↓ 下移", command=self.move_item_down).pack(side=tk.LEFT, padx=2)
         tk.Label(t_bar, text="|").pack(side=tk.LEFT, padx=2)
         tk.Button(t_bar, text="🔤 加空格", command=self.add_spaces_to_tree_items, bg="#e3f2fd").pack(side=tk.LEFT, padx=2)
-        tk.Button(t_bar, text="🚩 标记/取消", command=self.toggle_mark_selected, bg="#fffde7").pack(side=tk.LEFT, padx=2)
+        tk.Button(t_bar, text="✂️ 拆分A组", command=self.split_group_a_items, bg="#fffde7").pack(side=tk.LEFT, padx=2)
+        # 添加工具提示
+        self.create_tooltip(t_bar.winfo_children()[-1], "自动拆分所有A组且文字数>2的项目\n前两字→A组，其余字→C组")
+        tk.Button(t_bar, text="📝 批量改组", command=self.batch_change_group, bg="#e1f5fe").pack(side=tk.LEFT, padx=2)
+        tk.Button(t_bar, text="📌 固定位置", command=self.save_current_order, bg="#fff3e0").pack(side=tk.LEFT, padx=2)
+        tk.Button(t_bar, text="🔄 重置顺序", command=self.reset_order_by_y, bg="#f3e5f5").pack(side=tk.LEFT, padx=2)
+        tk.Button(t_bar, text="🔄 全改C组", command=self.batch_set_all_to_c, bg="#ffebee").pack(side=tk.LEFT, padx=2)
+        # 添加工具提示
+        self.create_tooltip(t_bar.winfo_children()[-1], "将所有数据项的组值都改为C组")
         tk.Button(t_bar, text="⚙️ 空格设置", command=self.show_space_settings, bg="#f3e5f5").pack(side=tk.LEFT, padx=2)
         tk.Button(t_bar, text="🎨 字体样式", command=self.show_font_style_settings, bg="#e8f5e8").pack(side=tk.LEFT, padx=2)
+        
+        # 添加功能提示
+        tk.Label(t_bar, text="💡", fg="blue", bg="#ddd", font=("Arial", 10)).pack(side=tk.LEFT, padx=5)
+        self.create_tooltip(t_bar.winfo_children()[-1], "右击分类目录的名称或标记列\n可批量将该分类下所有数据改为C组")
+        
+        # 在工具栏右侧添加消息显示区域
+        self.message_area = tk.Frame(t_bar, bg="#ddd")
+        self.message_area.pack(side=tk.RIGHT, padx=10)
 
-        self.tree = ttk.Treeview(self.tab_tree, columns=('Label', 'Status', 'Index'), show='tree headings',
-                                 displaycolumns=('Label', 'Status'))
+        self.tree = ttk.Treeview(self.tab_tree, columns=('Label', 'Status', 'Group', 'Index'), show='tree headings',
+                                 displaycolumns=('Label', 'Status', 'Group'))
         self.tree.heading('#0', text='分类目录');
         self.tree.heading('Label', text='名称');
         self.tree.heading('Status', text='标记')
+        self.tree.heading('Group', text='组')
         self.tree.column('Index', width=0, stretch=False)
-        self.tree.pack(fill=tk.BOTH, expand=True)
+        
+        # 添加垂直滚动条
+        tree_scrollbar = ttk.Scrollbar(self.tab_tree, orient=tk.VERTICAL, command=self.tree.yview)
+        self.tree.configure(yscrollcommand=tree_scrollbar.set)
+        
+        # 布局
+        self.tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        tree_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
 
         self.tree.bind("<ButtonPress-1>", self.on_drag_start)
         self.tree.bind("<B1-Motion>", self.on_drag_motion)
         self.tree.bind("<ButtonRelease-1>", self.on_drag_release)
         self.tree.bind("<Button-3>", self.on_right_click)
         self.tree.bind("<Double-1>", self.on_double_click)  # 添加双击事件
-        self.tree.bind("<space>", self.toggle_mark_selected)  # 空格键切换标记
+        self.tree.bind("<space>", self.split_group_a_items)  # 空格键拆分所有A组
 
         # --- 报告页 ---
         self.tab_report = tk.Frame(self.inner_nb)
         self.inner_nb.add(self.tab_report, text="文本报告")
         r_bar = tk.Frame(self.tab_report, bg="#ddd")
         r_bar.pack(fill=tk.X, side=tk.TOP)
-        tk.Button(r_bar, text="💾 导出 TXT", command=self.export_txt_file, bg="#e1f5fe").pack(side=tk.LEFT, padx=5,
-                                                                                             pady=2)
+        tk.Button(r_bar, text="💾 导出 TXT", command=self.export_txt_file, bg="#e1f5fe").pack(side=tk.LEFT, padx=5, pady=2)
         tk.Button(r_bar, text="繁 -> 简", command=self.convert_to_simplified, bg="#fff0f5").pack(side=tk.LEFT, padx=2)
         tk.Button(r_bar, text="简 -> 繁", command=self.convert_to_traditional, bg="#fff0f5").pack(side=tk.LEFT, padx=2)
-        self.report_text = tk.Text(self.tab_report);
+        
+        # 使用ScrolledText提供更好的滚动条支持
+        self.report_text = scrolledtext.ScrolledText(self.tab_report, wrap=tk.WORD, 
+                                                   font=("Microsoft YaHei", 11))
         self.report_text.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
 
     def setup_plot_tab(self):
@@ -649,41 +675,131 @@ class OCRApp:
     # ===============================================
     # 数据分类功能方法
     # ===============================================
+    def reset_order_by_y(self):
+        """按Y坐标重置顺序"""
+        try:
+            if messagebox.askyesno("确认重置", "确定要按Y坐标重新排序吗？\n这将覆盖当前的手动调整顺序。"):
+                # 按Y坐标排序，然后重新分配Order值
+                self.df = self.df.sort_values('Y', ascending=False).reset_index(drop=True)  # Y坐标从大到小
+                self.df['Order'] = range(len(self.df))
+                
+                self.refresh_all()
+                self.show_temp_message("✓ 已按Y坐标重新排序！")
+                messagebox.showinfo("成功", "已按Y坐标重新排序！")
+        except Exception as e:
+            messagebox.showerror("错误", f"重置顺序失败：{str(e)}")
+
+    def save_current_order(self):
+        """保存当前树视图中的顺序到DataFrame"""
+        try:
+            self.update_order_from_tree()
+            
+            # 显示调试信息
+            if 'Order' in self.df.columns:
+                order_info = f"已保存 {len(self.df)} 个项目的位置顺序"
+                self.show_temp_message("✓ 位置顺序已固定！")
+                messagebox.showinfo("成功", f"{order_info}\n即使刷新数据，文字顺序也不会改变。")
+            else:
+                messagebox.showwarning("提示", "DataFrame中没有Order列，无法保存顺序")
+        except Exception as e:
+            messagebox.showerror("错误", f"保存顺序失败：{str(e)}")
+
+    def reorder_dataframe(self):
+        """重新整理DataFrame的Order列，确保顺序连续"""
+        if 'Order' not in self.df.columns:
+            self.df['Order'] = range(len(self.df))
+        else:
+            # 按Order列排序，然后重新分配连续的Order值
+            self.df = self.df.sort_values('Order').reset_index(drop=True)
+            self.df['Order'] = range(len(self.df))
+
     def move_item_up(self):
         """上移项目"""
         selected = self.tree.selection()
+        if not selected:
+            return
+            
+        moved_items = []
         for item in selected:
             parent = self.tree.parent(item)
             if parent:
                 idx = self.tree.index(item)
-                if idx > 0: self.tree.move(item, parent, idx - 1)
+                if idx > 0:
+                    # 获取当前项目的DataFrame索引
+                    values = self.tree.item(item, 'values')
+                    if values and len(values) > 3:
+                        current_df_idx = int(values[3])
+                        moved_items.append(current_df_idx)
+                    
+                    self.tree.move(item, parent, idx - 1)
+        
+        # 更新DataFrame中的Order
+        if moved_items:
+            self.update_order_from_tree()
+        
         self.generate_report_from_tree()
 
     def move_item_down(self):
         """下移项目"""
-        selected = reversed(self.tree.selection())
+        selected = list(reversed(self.tree.selection()))
+        if not selected:
+            return
+            
+        moved_items = []
         for item in selected:
             parent = self.tree.parent(item)
             if parent:
                 idx = self.tree.index(item)
                 siblings = self.tree.get_children(parent)
-                if idx < len(siblings) - 1: self.tree.move(item, parent, idx + 1)
+                if idx < len(siblings) - 1:
+                    # 获取当前项目的DataFrame索引
+                    values = self.tree.item(item, 'values')
+                    if values and len(values) > 3:
+                        current_df_idx = int(values[3])
+                        moved_items.append(current_df_idx)
+                    
+                    self.tree.move(item, parent, idx + 1)
+        
+        # 更新DataFrame中的Order
+        if moved_items:
+            self.update_order_from_tree()
+        
         self.generate_report_from_tree()
+
+    def update_order_from_tree(self):
+        """从树视图的当前顺序更新DataFrame中的Order列"""
+        if 'Order' not in self.df.columns:
+            self.df['Order'] = range(len(self.df))
+            return
+        
+        order_counter = 0
+        
+        # 遍历所有分类目录
+        for category_item in self.tree.get_children(""):
+            # 遍历该分类下的所有数据项
+            for data_item in self.tree.get_children(category_item):
+                values = self.tree.item(data_item, 'values')
+                if values and len(values) > 3:
+                    df_idx = int(values[3])  # DataFrame中的索引
+                    if df_idx in self.df.index:
+                        self.df.loc[df_idx, 'Order'] = order_counter
+                        order_counter += 1
 
     def open_add_data_dialog(self):
         """打开新增数据对话框 (美化版)"""
         # 使用 create_popup_window 创建窗口，统一风格
-        dialog = self.create_popup_window(self.root, "新增数据", "add_data_dialog", 420, 320)
+        dialog = self.create_popup_window(self.root, "新增数据", "add_data_dialog", 420, 400)
         
         # 准备默认数据
         default_y, default_x, insert_pos = 0.0, 0.0, len(self.df)
         selected = self.tree.selection()
         if selected and self.tree.parent(selected[0]):
             vals = self.tree.item(selected[0], 'values')
-            row_idx = int(vals[2])
-            if row_idx in self.df.index:
-                default_y, default_x = self.df.loc[row_idx, 'Y'] + 1, self.df.loc[row_idx, 'X']
-                insert_pos = self.df.index.get_loc(row_idx) + 1
+            if len(vals) > 3:  # 确保有足够的值
+                row_idx = int(vals[3])  # 索引现在在第4列
+                if row_idx in self.df.index:
+                    default_y, default_x = self.df.loc[row_idx, 'Y'] + 1, self.df.loc[row_idx, 'X']
+                    insert_pos = self.df.index.get_loc(row_idx) + 1
 
         # 1. 标题头
         tk.Label(dialog, text="➕ 添加新数据点", font=("Microsoft YaHei", 14, "bold"), fg="#333").pack(pady=(20, 15))
@@ -715,6 +831,24 @@ class OCRApp:
         x_ent.insert(0, str(default_x))
         x_ent.grid(row=2, column=1, sticky="ew", padx=(10, 0))
         
+        # 组选择
+        tk.Label(form_frame, text="组 Group:", font=lbl_font, fg="#555").grid(row=3, column=0, sticky="w", pady=8)
+        group_combo = ttk.Combobox(form_frame, values=['A', 'B', 'C'], state="readonly", font=ent_font)
+        group_combo.set('B')  # 默认选择B
+        group_combo.grid(row=3, column=1, sticky="ew", padx=(10, 0))
+        
+        # 根据名称输入框的内容动态设置默认组值
+        def update_group_default(*args):
+            name = n_ent.get().strip()
+            if name:
+                default_group = self.get_group_by_text_color(name)
+                group_combo.set(default_group)
+            else:
+                group_combo.set('B')  # 空名称时默认为B
+        
+        # 绑定名称输入框的变化事件
+        n_ent.bind('<KeyRelease>', update_group_default)
+        
         form_frame.columnconfigure(1, weight=1)
 
         # 3. 按钮区域
@@ -730,9 +864,25 @@ class OCRApp:
             try:
                 y_val = float(y_ent.get())
                 x_val = float(x_ent.get())
+                group_val = group_combo.get()
                 
-                row = pd.DataFrame([[name, y_val, x_val]], columns=['Label', 'Y', 'X'])
+                # 计算新的Order值
+                if insert_pos == 0:
+                    new_order = -1  # 插入到最前面
+                elif insert_pos >= len(self.df):
+                    new_order = len(self.df)  # 插入到最后面
+                else:
+                    # 插入到中间，使用前一个和后一个的平均值
+                    prev_order = self.df.iloc[insert_pos-1]['Order'] if insert_pos > 0 else -1
+                    next_order = self.df.iloc[insert_pos]['Order'] if insert_pos < len(self.df) else len(self.df)
+                    new_order = (prev_order + next_order) / 2
+                
+                row = pd.DataFrame([[name, y_val, x_val, group_val, new_order]], columns=['Label', 'Y', 'X', 'Group', 'Order'])
                 self.df = pd.concat([self.df.iloc[:insert_pos], row, self.df.iloc[insert_pos:]]).reset_index(drop=True)
+                
+                # 重新整理Order列，确保顺序正确
+                self.reorder_dataframe()
+                
                 self.category_list, self.marked_indices = [], set()
                 self.refresh_all()
                 dialog.destroy()
@@ -756,9 +906,66 @@ class OCRApp:
         dialog.bind('<Escape>', lambda e: dialog.destroy())
 
     def on_drag_start(self, event):
-        """开始拖拽"""
+        """开始拖拽或处理特殊列点击"""
         item = self.tree.identify_row(event.y)
-        if item and self.tree.parent(item): self.drag_source_item = item
+        column = self.tree.identify_column(event.x)
+        
+        # 检查是否点击了组列
+        if item and self.tree.parent(item) and column == '#3':
+            # 点击了组列，直接显示下拉菜单编辑
+            self.show_group_dropdown(item, event)
+            return
+        
+        # 正常的拖拽逻辑
+        if item and self.tree.parent(item): 
+            self.drag_source_item = item
+    
+    def show_group_dropdown(self, iid, event):
+        """显示组选择下拉菜单"""
+        try:
+            # 获取当前组值
+            values = self.tree.item(iid, 'values')
+            if not values or len(values) < 3:
+                return
+            
+            current_group = values[2]
+            
+            # 创建弹出菜单
+            popup_menu = tk.Menu(self.root, tearoff=0)
+            
+            # 添加组选项
+            for group in ['A', 'B', 'C']:
+                # 当前选中的组用特殊标记
+                label = f"● {group}" if group == current_group else f"  {group}"
+                popup_menu.add_command(
+                    label=label,
+                    command=lambda g=group: self.set_group_value(iid, g)
+                )
+            
+            # 显示菜单
+            popup_menu.tk_popup(event.x_root, event.y_root)
+            
+        except Exception as e:
+            print(f"显示组下拉菜单失败: {e}")
+        finally:
+            try:
+                popup_menu.grab_release()
+            except:
+                pass
+    
+    def set_group_value(self, iid, group_value):
+        """设置组值"""
+        try:
+            values = self.tree.item(iid, 'values')
+            if values and len(values) > 3:
+                idx = int(values[3])
+                # 更新DataFrame中的组值
+                self.df.loc[idx, 'Group'] = group_value
+                # 刷新显示
+                self.refresh_all()
+                self.show_temp_message(f"✓ 组已更新为：{group_value}")
+        except Exception as e:
+            print(f"设置组值失败: {e}")
 
     def on_drag_motion(self, event):
         """拖拽中"""
@@ -767,12 +974,18 @@ class OCRApp:
 
     def on_drag_release(self, event):
         """结束拖拽"""
-        if not self.drag_source_item: return
+        if not self.drag_source_item: 
+            return
+            
         target = self.tree.identify_row(event.y)
         if target and target != self.drag_source_item:
             dest_p = self.tree.parent(target) or target
             try:
                 self.tree.move(self.drag_source_item, dest_p, self.tree.index(target))
+                
+                # 更新DataFrame中的Order
+                self.update_order_from_tree()
+                
                 self.generate_report_from_tree()
             except:
                 pass
@@ -844,7 +1057,13 @@ class OCRApp:
             tag = f"tag_{cat['color']}"
             self.tree.tag_configure(tag, foreground=cat['color'], font=("", self.current_font_size, "bold"))
             pid = self.tree.insert("", "end", text=f"📂 {cat['name']}", open=True, tags=(tag,))
-            for idx in sorted(list(cat['indices'])):
+            # 按Order列排序显示，如果没有Order列则按索引排序
+            if 'Order' in self.df.columns:
+                sorted_indices = sorted(list(cat['indices']), key=lambda x: self.df.loc[x, 'Order'] if x in self.df.index else float('inf'))
+            else:
+                sorted_indices = sorted(list(cat['indices']))
+            
+            for idx in sorted_indices:
                 m = idx in self.marked_indices
                 label_text = self.df.loc[idx, 'Label']
                 
@@ -862,7 +1081,7 @@ class OCRApp:
                     # 只有字体样式
                     item_tags.append(font_style_tag)
                 
-                self.tree.insert(pid, "end", values=(label_text, "✅ 标记" if m else "", idx),
+                self.tree.insert(pid, "end", values=(label_text, "✅ 标记" if m else "", self.df.loc[idx, 'Group'] if 'Group' in self.df.columns else self.get_group_by_text_color(label_text), idx),
                                  tags=tuple(item_tags))
                 cat_idx.add(idx)
         rem_df = self.df.drop(list(cat_idx))
@@ -880,7 +1099,13 @@ class OCRApp:
             for name, sub in line_cats:
                 if sub.empty: continue
                 pid = self.tree.insert("", "end", text=f"📂 {self.custom_cat_names.get(name, name)}", open=True)
-                for r_idx, r in sub.iterrows():
+                # 按Order列排序显示
+                if 'Order' in sub.columns:
+                    sub_sorted = sub.sort_values('Order')
+                else:
+                    sub_sorted = sub
+                
+                for r_idx, r in sub_sorted.iterrows():
                     m = r_idx in self.marked_indices
                     label_text = r['Label']
                     
@@ -898,7 +1123,7 @@ class OCRApp:
                         # 只有字体样式
                         item_tags.append(font_style_tag)
                     
-                    self.tree.insert(pid, "end", values=(label_text, "✅ 标记" if m else "", r_idx),
+                    self.tree.insert(pid, "end", values=(label_text, "✅ 标记" if m else "", r.get('Group', self.get_group_by_text_color(label_text)), r_idx),
                                      tags=tuple(item_tags))
         self.generate_report_from_tree()
     
@@ -934,34 +1159,68 @@ class OCRApp:
             if text.lower().startswith(prefix.lower()):
                 return f"font_style_{prefix}"
         return None
+    
+    def get_group_by_text_color(self, text):
+        """根据文字颜色获取组值"""
+        for prefix, style in self.font_style_rules.items():
+            if text.lower().startswith(prefix.lower()):
+                color = style.get('color', '#000000').upper()
+                # 检查是否为红色（支持多种红色表示）
+                if color in ['#FF0000', '#RED', 'RED'] or color.startswith('#FF'):
+                    return 'A'
+        # 默认返回B
+        return 'B'
 
     def generate_report_from_tree(self):
-        """从树生成报告"""
-        self.report_text.delete("1.0", tk.END);
+        """从树生成报告 - 根据组值添加空行分隔"""
+        self.report_text.delete("1.0", tk.END)
         content = ""
+        
         for pid in self.tree.get_children(""):
-            title = self.tree.item(pid, "text").replace("📂 ", "");
+            title = self.tree.item(pid, "text").replace("📂 ", "")
             children = self.tree.get_children(pid)
-            if not children: continue
+            if not children: 
+                continue
+                
             content += f"【{title}】:\n"
-            prev_m = None
-            for i, cid in enumerate(children):
-                vals = self.tree.item(cid, "values");
-                name, idx = vals[0], int(vals[2]);
-                curr_m = idx in self.marked_indices
-                if curr_m:
-                    if prev_m is False or prev_m is None: content += "\n"
-                    content += f"{name}\n"
-                else:
-                    content += f"\n{name}\n\n"
-                if curr_m:
-                    next_m = False
-                    if i < len(children) - 1: next_m = int(
-                        self.tree.item(children[i + 1], "values")[2]) in self.marked_indices
-                    if not next_m: content += "\n"
-                prev_m = curr_m
+            
+            # 收集所有数据项的信息，包括组值
+            items_data = []
+            for cid in children:
+                vals = self.tree.item(cid, "values")
+                if len(vals) >= 4:  # 确保有组值
+                    name = vals[0]
+                    group = vals[2]  # 组值在第3列（索引2）
+                    idx = int(vals[3])  # 索引在第4列（索引3）
+                    is_marked = idx in self.marked_indices
+                    items_data.append({
+                        'name': name,
+                        'group': group,
+                        'is_marked': is_marked,
+                        'index': idx
+                    })
+            
+            # 按原始顺序处理数据，根据组值添加空行
+            prev_group = None
+            
+            for i, item in enumerate(items_data):
+                name = item['name']
+                group = item['group']
+                is_marked = item['is_marked']
+                
+                # 如果组值改变了，添加空行分隔（但不是第一项）
+                if prev_group is not None and prev_group != group:
+                    content += "\n"
+                
+                # 简单添加项目名称，不额外添加空行
+                content += f"{name}\n"
+                
+                prev_group = group
+            
             content += "\n"
-        self.report_text.insert(tk.END, re.sub(r'\n{3,}', '\n\n', content).strip() + "\n")
+        
+        # 插入到文本框
+        self.report_text.insert(tk.END, content)
 
     def on_font_combo_change(self, event):
         """字体大小改变"""
@@ -982,8 +1241,10 @@ class OCRApp:
         self.report_text.configure(font=("Microsoft YaHei", s))
 
     def on_right_click(self, event):
-        """右键点击事件 - 数据项直接切换标记，分类目录显示菜单"""
+        """右键点击事件 - 根据点击位置显示不同菜单"""
         iid = self.tree.identify_row(event.y)
+        column = self.tree.identify_column(event.x)
+        
         if not iid:
             return
 
@@ -992,11 +1253,22 @@ class OCRApp:
             self.tree.selection_set(iid)
         
         if self.tree.parent(iid):
-            # === 数据项：对所有选中项切换标记 ===
-            self.toggle_mark_selected()
+            # === 数据项 ===
+            if column == '#3':
+                # 右键点击组列 - 直接改为C
+                self.quick_set_group_to_c(iid)
+            else:
+                # 右键点击其他列 - 拆分所有A组
+                self.split_group_a_items()
             return
         
         # === 分类目录：显示菜单 ===
+        if column == '#1' or column == '#2':
+            # 右键点击名称列或标记列 - 批量改组为C
+            self.batch_set_category_group_to_c(iid)
+            return
+        
+        # 右键点击其他列 - 显示常规菜单
         context_menu = tk.Menu(self.root, tearoff=0)
         context_menu.add_command(label="✏️ 重命名分类", 
                                command=lambda: self.rename_category(iid))
@@ -1005,12 +1277,248 @@ class OCRApp:
                                command=lambda: self.show_category_stats(iid))
         context_menu.add_command(label="🎨 更改颜色", 
                                command=lambda: self.change_category_color(iid))
+        context_menu.add_separator()
+        context_menu.add_command(label="🔄 批量改组为A", 
+                               command=lambda: self.batch_set_category_group(iid, 'A'))
+        context_menu.add_command(label="🔄 批量改组为B", 
+                               command=lambda: self.batch_set_category_group(iid, 'B'))
+        context_menu.add_command(label="🔄 批量改组为C", 
+                               command=lambda: self.batch_set_category_group(iid, 'C'))
         
         # 显示菜单
         try:
             context_menu.tk_popup(event.x_root, event.y_root)
         finally:
             context_menu.grab_release()
+    
+    def batch_set_all_to_c(self):
+        """批量将所有数据项的组值设为C"""
+        try:
+            if self.df.empty:
+                messagebox.showinfo("提示", "没有数据可以处理！")
+                return
+            
+            # 统计当前组值分布
+            group_counts = self.df['Group'].value_counts().to_dict()
+            total_count = len(self.df)
+            
+            # 构建统计信息
+            stats_text = "、".join([f"{group}组{count}个" for group, count in group_counts.items()])
+            
+            # 确认对话框
+            if not messagebox.askyesno("确认批量修改", 
+                                     f"当前共有 {total_count} 个数据项：\n" +
+                                     f"分布：{stats_text}\n\n" +
+                                     f"确定要将所有项目的组值都改为 C 吗？\n\n" +
+                                     f"⚠️ 此操作不可撤销！"):
+                return
+            
+            # 执行批量修改
+            self.df['Group'] = 'C'
+            
+            # 刷新显示
+            self.refresh_all()
+            
+            # 显示结果
+            self.show_temp_message(f"✓ 已将 {total_count} 个项目改为C组！")
+            messagebox.showinfo("修改完成", 
+                              f"✅ 批量修改完成！\n\n" +
+                              f"📊 修改结果：\n" +
+                              f"• 处理项目数：{total_count} 个\n" +
+                              f"• 新组值：全部为C组\n\n" +
+                              f"💡 提示：所有数据项的组值已统一设为C组")
+            
+        except Exception as e:
+            messagebox.showerror("错误", f"批量修改失败：{str(e)}")
+
+    def batch_set_category_group(self, category_iid, target_group):
+        """批量将分类下所有数据项的组值设为指定组"""
+        try:
+            # 获取分类名称
+            category_name = self.tree.item(category_iid, "text").replace("📂 ", "")
+            
+            # 获取该分类下的所有数据项
+            children = self.tree.get_children(category_iid)
+            if not children:
+                messagebox.showinfo("提示", f"分类「{category_name}」下没有数据项！")
+                return
+            
+            # 收集要修改的数据项信息
+            items_to_change = []
+            for child_iid in children:
+                values = self.tree.item(child_iid, 'values')
+                if values and len(values) > 3:
+                    idx = int(values[3])
+                    if idx in self.df.index:
+                        current_group = values[2]
+                        item_name = values[0]
+                        items_to_change.append({
+                            'idx': idx,
+                            'name': item_name,
+                            'current_group': current_group
+                        })
+            
+            if not items_to_change:
+                messagebox.showinfo("提示", f"分类「{category_name}」下没有有效的数据项！")
+                return
+            
+            # 统计当前组值分布
+            group_stats = {}
+            for item in items_to_change:
+                group = item['current_group']
+                group_stats[group] = group_stats.get(group, 0) + 1
+            
+            # 构建统计信息
+            stats_text = "、".join([f"{group}组{count}个" for group, count in group_stats.items()])
+            
+            # 确认对话框
+            total_count = len(items_to_change)
+            if not messagebox.askyesno("确认批量修改", 
+                                     f"分类「{category_name}」包含 {total_count} 个数据项：\n" +
+                                     f"当前分布：{stats_text}\n\n" +
+                                     f"确定要将所有项目的组值都改为 {target_group} 吗？"):
+                return
+            
+            # 执行批量修改
+            changed_count = 0
+            for item in items_to_change:
+                idx = item['idx']
+                if idx in self.df.index:
+                    self.df.loc[idx, 'Group'] = target_group
+                    changed_count += 1
+            
+            # 刷新显示
+            self.refresh_all()
+            
+            # 显示结果
+            self.show_temp_message(f"✓ 已将 {changed_count} 个项目改为{target_group}组！")
+            messagebox.showinfo("修改完成", 
+                              f"✅ 批量修改完成！\n\n" +
+                              f"📊 修改结果：\n" +
+                              f"• 分类：{category_name}\n" +
+                              f"• 修改项目数：{changed_count} 个\n" +
+                              f"• 新组值：{target_group}\n\n" +
+                              f"💡 提示：所有项目的组值已统一设为{target_group}组")
+            
+        except Exception as e:
+            messagebox.showerror("错误", f"批量修改组值失败：{str(e)}")
+
+    def batch_set_category_group_to_c(self, category_iid):
+        """批量将分类下所有数据项的组值设为C（兼容性方法）"""
+        self.batch_set_category_group(category_iid, 'C')
+
+    def quick_set_group_to_c(self, iid):
+        """右键快速将组值设为C"""
+        try:
+            values = self.tree.item(iid, 'values')
+            if values and len(values) > 3:
+                idx = int(values[3])
+                old_group = values[2]
+                item_name = values[0]
+                
+                # 直接设置为C
+                new_group = 'C'
+                
+                # 更新DataFrame中的组值
+                self.df.loc[idx, 'Group'] = new_group
+                
+                # 刷新显示
+                self.refresh_all()
+                
+                # 显示提示消息
+                if old_group != new_group:
+                    self.show_temp_message(f"✓ {item_name}: {old_group} → {new_group}")
+                else:
+                    self.show_temp_message(f"✓ {item_name}: 已是 {new_group}")
+                    
+        except Exception as e:
+            print(f"快速设置组值为C失败: {e}")
+            messagebox.showerror("错误", f"设置组值失败：{str(e)}")
+    
+    
+    def show_group_context_menu(self, iid, event):
+        """显示组值快速修改右键菜单"""
+        try:
+            values = self.tree.item(iid, 'values')
+            if not values or len(values) < 3:
+                return
+            
+            current_group = values[2]
+            item_name = values[0]
+            
+            # 创建右键菜单
+            context_menu = tk.Menu(self.root, tearoff=0)
+            
+            # 添加标题
+            context_menu.add_command(label=f"📝 修改组值: {item_name}", state=tk.DISABLED)
+            context_menu.add_separator()
+            
+            # 添加快速修改选项
+            for group in ['A', 'B', 'C']:
+                if group == current_group:
+                    # 当前组值用特殊标记，但仍可点击（用于确认）
+                    label = f"● {group} (当前)"
+                    context_menu.add_command(
+                        label=label,
+                        command=lambda g=group: self.quick_set_group_value(iid, g),
+                        foreground="#666"
+                    )
+                else:
+                    # 其他组值
+                    label = f"  {group}"
+                    context_menu.add_command(
+                        label=label,
+                        command=lambda g=group: self.quick_set_group_value(iid, g)
+                    )
+            
+            # 添加分隔符和批量操作
+            context_menu.add_separator()
+            
+            # 如果有多个选中项，添加批量修改选项
+            selected_items = self.tree.selection()
+            data_items = [item for item in selected_items if self.tree.parent(item)]
+            
+            if len(data_items) > 1:
+                context_menu.add_command(
+                    label=f"📝 批量修改 ({len(data_items)} 项)",
+                    command=self.batch_change_group
+                )
+            
+            # 显示菜单
+            context_menu.tk_popup(event.x_root, event.y_root)
+            
+        except Exception as e:
+            print(f"显示组右键菜单失败: {e}")
+        finally:
+            try:
+                context_menu.grab_release()
+            except:
+                pass
+    
+    def quick_set_group_value(self, iid, group_value):
+        """快速设置单个项目的组值"""
+        try:
+            values = self.tree.item(iid, 'values')
+            if values and len(values) > 3:
+                idx = int(values[3])
+                old_group = values[2]
+                item_name = values[0]
+                
+                # 更新DataFrame中的组值
+                self.df.loc[idx, 'Group'] = group_value
+                
+                # 刷新显示
+                self.refresh_all()
+                
+                # 显示提示消息
+                if old_group != group_value:
+                    self.show_temp_message(f"✓ {item_name}: {old_group} → {group_value}")
+                else:
+                    self.show_temp_message(f"✓ {item_name}: 保持 {group_value}")
+                    
+        except Exception as e:
+            print(f"快速设置组值失败: {e}")
+            messagebox.showerror("错误", f"设置组值失败：{str(e)}")
     
     def on_double_click(self, event):
         """双击事件 - 直接在单元格中编辑"""
@@ -1026,11 +1534,11 @@ class OCRApp:
                     # 双击名称列 - 直接编辑
                     self.start_inline_edit(iid, column)
                 elif column == '#2':
-                    # 双击标记列 - 切换标记状态
-                    values = self.tree.item(iid, 'values')
-                    if values and len(values) > 2:
-                        idx = int(values[2])
-                        self.toggle_mark(idx)
+                    # 双击标记列 - 拆分所有A组项目
+                    self.split_group_a_items()
+                elif column == '#3':
+                    # 双击组列 - 不做任何操作（单击已经能编辑）
+                    pass
             else:
                 # 双击分类目录 - 直接编辑分类名
                 if column == '#0':
@@ -1055,6 +1563,7 @@ class OCRApp:
                 # 分类目录列
                 current_value = self.tree.item(iid, "text").replace("📂 ", "")
                 edit_type = 'category'
+                editor_widget = 'entry'
             elif column == '#1':
                 # 名称列
                 values = self.tree.item(iid, 'values')
@@ -1062,16 +1571,33 @@ class OCRApp:
                     return
                 current_value = values[0]
                 edit_type = 'item_name'
+                editor_widget = 'entry'
+            elif column == '#3':
+                # 组列
+                values = self.tree.item(iid, 'values')
+                if not values or len(values) < 3:
+                    return
+                current_value = values[2]
+                edit_type = 'item_group'
+                editor_widget = 'combobox'
             else:
                 return
             
-            # 创建编辑器Entry控件
-            self.inline_editor = tk.Entry(self.tree, font=("Microsoft YaHei", self.current_font_size))
-            self.inline_editor.place(x=x, y=y, width=width, height=height)
+            # 创建编辑器控件
+            if editor_widget == 'combobox':
+                # 创建下拉框编辑器
+                self.inline_editor = ttk.Combobox(self.tree, values=['A', 'B', 'C'], state="readonly",
+                                                font=("Microsoft YaHei", self.current_font_size))
+                self.inline_editor.place(x=x, y=y, width=width, height=height)
+                self.inline_editor.set(current_value)
+            else:
+                # 创建文本框编辑器
+                self.inline_editor = tk.Entry(self.tree, font=("Microsoft YaHei", self.current_font_size))
+                self.inline_editor.place(x=x, y=y, width=width, height=height)
+                # 设置初始值并全选
+                self.inline_editor.insert(0, current_value)
+                self.inline_editor.select_range(0, tk.END)
             
-            # 设置初始值并全选
-            self.inline_editor.insert(0, current_value)
-            self.inline_editor.select_range(0, tk.END)
             self.inline_editor.focus_set()
             
             # 保存编辑信息
@@ -1141,11 +1667,20 @@ class OCRApp:
             elif edit_info['edit_type'] == 'item_name':
                 # 更新数据项名称
                 values = self.tree.item(edit_info['iid'], 'values')
-                if values and len(values) > 2:
-                    idx = int(values[2])
+                if values and len(values) > 3:
+                    idx = int(values[3])
                     self.df.loc[idx, 'Label'] = new_value
                     self.refresh_all()
                     self.show_temp_message(f"✓ 已更新：{new_value}")
+                    
+            elif edit_info['edit_type'] == 'item_group':
+                # 更新数据项组
+                values = self.tree.item(edit_info['iid'], 'values')
+                if values and len(values) > 3:
+                    idx = int(values[3])
+                    self.df.loc[idx, 'Group'] = new_value
+                    self.refresh_all()
+                    self.show_temp_message(f"✓ 组已更新：{new_value}")
             
         except Exception as e:
             print(f"完成内联编辑失败: {e}")
@@ -1186,15 +1721,16 @@ class OCRApp:
     def show_temp_message(self, message, duration=2000):
         """显示临时消息提示"""
         try:
-            # 在状态栏或其他地方显示临时消息
-            # 这里我们可以在树视图上方创建一个临时标签
+            # 在工具栏右侧的消息区域显示临时消息
             if hasattr(self, 'temp_message_label'):
                 self.temp_message_label.destroy()
             
-            self.temp_message_label = tk.Label(self.tab_tree, text=message, 
+            self.temp_message_label = tk.Label(self.message_area, text=message, 
                                              bg="#E8F5E8", fg="#2E7D32", 
-                                             font=("Arial", 10), pady=5)
-            self.temp_message_label.pack(side=tk.TOP, fill=tk.X, after=self.tree)
+                                             font=("Microsoft YaHei", 9), 
+                                             padx=10, pady=3,
+                                             relief=tk.RAISED, bd=1)
+            self.temp_message_label.pack(side=tk.RIGHT)
             
             # 设置定时器自动隐藏消息
             self.root.after(duration, lambda: self.hide_temp_message())
@@ -1219,6 +1755,145 @@ class OCRApp:
         if refresh:
             self.refresh_all()
     
+    def split_group_a_items(self, event=None):
+        """拆分分类目录树中所有组值为A且文字数大于2的单元格"""
+        if self.df.empty:
+            messagebox.showinfo("提示", "没有数据可以处理！")
+            return
+        
+        # 收集所有需要拆分的项目（不依赖选择）
+        items_to_split = []
+        for idx, row in self.df.iterrows():
+            # 检查是否为A组且文字数大于2
+            if row['Group'] == 'A' and len(row['Label']) > 2:
+                items_to_split.append({
+                    'idx': idx,
+                    'label': row['Label'],
+                    'y': row['Y'],
+                    'x': row['X'],
+                    'order': row.get('Order', idx)
+                })
+        
+        if not items_to_split:
+            messagebox.showinfo("提示", "没有找到符合条件的项目！\n条件：组值为A且文字数大于2个字符")
+            return
+        
+        # 确认对话框
+        count = len(items_to_split)
+        preview_text = "\n".join([f"• {item['label']}" for item in items_to_split[:10]])
+        if count > 10:
+            preview_text += f"\n... 还有 {count-10} 个项目"
+        
+        if not messagebox.askyesno("确认拆分", 
+                                 f"找到 {count} 个符合条件的项目：\n\n{preview_text}\n\n" +
+                                 "将自动拆分所有这些项目：\n" +
+                                 "• 前两个字 → A组\n" +
+                                 "• 其余文字 → C组\n\n" +
+                                 "确定要继续吗？"):
+            return
+        
+        try:
+            # 按索引倒序处理，避免索引变化影响
+            items_to_split.sort(key=lambda x: x['idx'], reverse=True)
+            
+            split_count = 0
+            total_count = len(items_to_split)
+            
+            # 显示进度
+            self.progress_label.config(text=f"正在拆分项目... 0/{total_count}")
+            self.root.update()
+            
+            for i, item in enumerate(items_to_split):
+                idx = item['idx']
+                label = item['label']
+                y = item['y']
+                x = item['x']
+                order = item['order']
+                
+                # 更新进度
+                self.progress_label.config(text=f"正在拆分项目... {i+1}/{total_count} - {label}")
+                self.root.update()
+                
+                # 拆分文字：前两个字 + 其余字
+                first_part = label[:2]  # 前两个字
+                second_part = label[2:]  # 其余字
+                
+                # 删除原始行
+                self.df = self.df.drop(idx).reset_index(drop=True)
+                
+                # 重新整理Order列（因为删除了一行）
+                self.reorder_dataframe()
+                
+                # 计算插入位置（在原位置插入两个新行）
+                insert_pos = 0
+                for i, row in self.df.iterrows():
+                    if row.get('Order', i) >= order:
+                        insert_pos = i
+                        break
+                else:
+                    insert_pos = len(self.df)
+                
+                # 创建两个新行
+                # 第一个单元格：前两个字，组值A
+                first_order = order
+                first_row = pd.DataFrame([[first_part, y, x, 'A', first_order]], 
+                                       columns=['Label', 'Y', 'X', 'Group', 'Order'])
+                
+                # 第二个单元格：其余字，组值C，Order稍大一点
+                second_order = order + 0.1
+                second_row = pd.DataFrame([[second_part, y, x + 10, 'C', second_order]], 
+                                        columns=['Label', 'Y', 'X', 'Group', 'Order'])
+                
+                # 插入新行
+                self.df = pd.concat([
+                    self.df.iloc[:insert_pos], 
+                    first_row, 
+                    second_row, 
+                    self.df.iloc[insert_pos:]
+                ]).reset_index(drop=True)
+                
+                split_count += 1
+            
+            # 清除进度显示
+            self.progress_label.config(text="")
+            
+            # 重新整理Order列，确保顺序正确
+            self.reorder_dataframe()
+            
+            # 清空分类和标记，重新刷新
+            self.category_list, self.marked_indices = [], set()
+            self.refresh_all()
+            
+            # 显示结果
+            self.show_temp_message(f"✓ 已拆分 {split_count} 个项目！")
+            
+            # 统计拆分后的数据
+            a_count = len(self.df[self.df['Group'] == 'A'])
+            c_count = len(self.df[self.df['Group'] == 'C'])
+            total_items = len(self.df)
+            
+            messagebox.showinfo("拆分完成", 
+                              f"✅ 拆分操作完成！\n\n" +
+                              f"📊 处理结果：\n" +
+                              f"• 拆分了 {split_count} 个原始项目\n" +
+                              f"• 生成了 {split_count * 2} 个新项目\n\n" +
+                              f"📈 当前数据统计：\n" +
+                              f"• A组项目：{a_count} 个\n" +
+                              f"• C组项目：{c_count} 个\n" +
+                              f"• 总项目数：{total_items} 个\n\n" +
+                              f"💡 拆分规则：\n" +
+                              f"• 前两个字 → A组\n" +
+                              f"• 其余文字 → C组")
+            
+        except Exception as e:
+            # 清除进度显示
+            self.progress_label.config(text="")
+            messagebox.showerror("错误", f"拆分失败：{str(e)}")
+        
+        # 如果是按键触发的，防止默认行为
+        if event:
+            return "break"
+
     def toggle_mark_selected(self, event=None):
         """切换选中项的标记状态"""
         selected_items = self.tree.selection()
@@ -1230,8 +1905,8 @@ class OCRApp:
             # Check if item exists before accessing
             if self.tree.exists(iid) and self.tree.parent(iid):
                 values = self.tree.item(iid, 'values')
-                if values and len(values) > 2:
-                    idx = int(values[2])
+                if values and len(values) > 3:
+                    idx = int(values[3])
                     self.toggle_mark(idx, refresh=False)
                     modified = True
         
@@ -1242,13 +1917,127 @@ class OCRApp:
         if event:
             return "break"
     
+    def batch_change_group(self):
+        """批量修改选中项的组值"""
+        selected_items = self.tree.selection()
+        if not selected_items:
+            messagebox.showwarning("提示", "请先选择要修改的数据项！")
+            return
+        
+        # 过滤出数据项（排除分类目录）
+        data_items = []
+        for iid in selected_items:
+            if self.tree.exists(iid) and self.tree.parent(iid):
+                values = self.tree.item(iid, 'values')
+                if values and len(values) > 3:
+                    data_items.append({
+                        'iid': iid,
+                        'name': values[0],
+                        'current_group': values[2],
+                        'index': int(values[3])
+                    })
+        
+        if not data_items:
+            messagebox.showwarning("提示", "请选择数据项（不是分类目录）！")
+            return
+        
+        # 创建批量修改对话框
+        self.show_batch_group_dialog(data_items)
+    
+    def show_batch_group_dialog(self, data_items):
+        """显示批量修改组值对话框"""
+        dialog = self.create_popup_window(self.root, "批量修改组值", "batch_group_dialog", 500, 400)
+        
+        # 标题
+        tk.Label(dialog, text="📝 批量修改组值", 
+                font=("Microsoft YaHei", 14, "bold"), fg="#333").pack(pady=(20, 15))
+        
+        # 信息显示
+        info_text = f"已选择 {len(data_items)} 个数据项"
+        tk.Label(dialog, text=info_text, 
+                font=("Microsoft YaHei", 10), fg="#666").pack(pady=(0, 10))
+        
+        # 预览框架
+        preview_frame = tk.LabelFrame(dialog, text="预览选中的项目", padx=10, pady=10)
+        preview_frame.pack(fill=tk.BOTH, expand=True, padx=20, pady=10)
+        
+        # 创建预览列表
+        preview_listbox = tk.Listbox(preview_frame, height=8, font=("Microsoft YaHei", 9))
+        preview_scrollbar = ttk.Scrollbar(preview_frame, orient=tk.VERTICAL, command=preview_listbox.yview)
+        preview_listbox.configure(yscrollcommand=preview_scrollbar.set)
+        
+        # 添加数据项到预览列表
+        for item in data_items:
+            preview_listbox.insert(tk.END, f"{item['name']} (当前组: {item['current_group']})")
+        
+        preview_listbox.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        preview_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        
+        # 选择新组值
+        group_frame = tk.Frame(dialog)
+        group_frame.pack(fill=tk.X, padx=20, pady=10)
+        
+        tk.Label(group_frame, text="选择新的组值:", 
+                font=("Microsoft YaHei", 11, "bold")).pack(side=tk.LEFT)
+        
+        group_var = tk.StringVar(value="A")
+        group_combo = ttk.Combobox(group_frame, textvariable=group_var, 
+                                  values=['A', 'B', 'C'], state="readonly", 
+                                  font=("Microsoft YaHei", 10), width=10)
+        group_combo.pack(side=tk.LEFT, padx=10)
+        
+        # 按钮框架
+        btn_frame = tk.Frame(dialog)
+        btn_frame.pack(fill=tk.X, padx=20, pady=20)
+        
+        def apply_batch_change():
+            new_group = group_var.get()
+            if not new_group:
+                messagebox.showwarning("提示", "请选择新的组值！", parent=dialog)
+                return
+            
+            # 确认对话框
+            if not messagebox.askyesno("确认修改", 
+                                     f"确定要将选中的 {len(data_items)} 个项目的组值都改为 '{new_group}' 吗？", 
+                                     parent=dialog):
+                return
+            
+            # 执行批量修改
+            modified_count = 0
+            for item in data_items:
+                try:
+                    idx = item['index']
+                    if idx in self.df.index:
+                        self.df.loc[idx, 'Group'] = new_group
+                        modified_count += 1
+                except Exception as e:
+                    print(f"修改项目 {item['name']} 失败: {e}")
+            
+            # 刷新显示
+            self.refresh_all()
+            
+            # 显示结果
+            messagebox.showinfo("修改完成", 
+                              f"成功修改了 {modified_count} 个项目的组值为 '{new_group}'", 
+                              parent=dialog)
+            dialog.destroy()
+        
+        # 按钮
+        tk.Button(btn_frame, text="应用修改", command=apply_batch_change,
+                 bg="#4CAF50", fg="white", font=("Microsoft YaHei", 10, "bold"),
+                 padx=20, pady=8).pack(side=tk.RIGHT, padx=5)
+        
+        tk.Button(btn_frame, text="取消", command=dialog.destroy,
+                 bg="#757575", fg="white", font=("Microsoft YaHei", 10),
+                 padx=20, pady=8).pack(side=tk.RIGHT)
+    
     def edit_item_name(self, iid):
         """编辑数据项名称"""
         try:
             values = self.tree.item(iid, 'values')
             if values:
                 old_name = values[0]
-                idx = int(values[2])
+                idx = int(values[3])
                 
                 new_name = simpledialog.askstring(
                     "编辑名称", 
@@ -1294,11 +2083,15 @@ class OCRApp:
             values = self.tree.item(iid, 'values')
             if values:
                 name = values[0]
-                idx = int(values[2])
+                idx = int(values[3])
                 
                 if messagebox.askyesno("确认删除", f"确定要删除以下数据项吗？\n\n名称：{name}"):
                     # 从DataFrame中删除
                     self.df = self.df.drop(idx).reset_index(drop=True)
+                    
+                    # 重新整理Order列
+                    self.reorder_dataframe()
+                    
                     # 从标记集合中移除
                     if idx in self.marked_indices:
                         self.marked_indices.remove(idx)
@@ -1325,8 +2118,8 @@ class OCRApp:
             
             for child in children:
                 values = self.tree.item(child, 'values')
-                if values and len(values) > 2:
-                    idx = int(values[2])
+                if values and len(values) > 3:
+                    idx = int(values[3])
                     if idx in self.marked_indices:
                         marked_count += 1
             
@@ -1416,9 +2209,11 @@ class OCRApp:
     def delete_selected_data(self):
         """删除选中数据"""
         items = self.tree.selection()
-        indices = [int(self.tree.item(i, 'values')[2]) for i in items if self.tree.parent(i)]
+        indices = [int(self.tree.item(i, 'values')[3]) for i in items if self.tree.parent(i)]
         if indices and messagebox.askyesno("确认", "删除数据？"):
             self.df = self.df.drop(indices).reset_index(drop=True)
+            # 重新整理Order列
+            self.reorder_dataframe()
             self.category_list, self.marked_indices = [], set();
             self.refresh_all()
 
@@ -1895,11 +2690,19 @@ class OCRApp:
             parts = re.split(r'[|\t,，]+', line.strip())
             if len(parts) >= 3:
                 try:
-                    data.append([parts[0].strip(), float(parts[1]), float(parts[2])])
+                    # 如果有第4列，作为组，否则根据文字颜色自动判断
+                    if len(parts) > 3 and parts[3].strip() in ['A', 'B', 'C']:
+                        group = parts[3].strip()
+                    else:
+                        # 根据文字颜色自动设置组值
+                        group = self.get_group_by_text_color(parts[0].strip())
+                    data.append([parts[0].strip(), float(parts[1]), float(parts[2]), group])
                 except:
                     continue
         if data:
-            self.df = pd.DataFrame(data, columns=['Label', 'Y', 'X']);
+            self.df = pd.DataFrame(data, columns=['Label', 'Y', 'X', 'Group'])
+            # 添加Order列，初始顺序就是数据的原始顺序
+            self.df['Order'] = range(len(self.df));
             self.reset_all();
             self.main_notebook.select(self.classifier_tab)
             self.classifier_notebook.select(self.tab_plt)
@@ -5801,6 +6604,25 @@ class OCRApp:
         
         tk.Button(btn_frame, text="取消", command=editor_window.destroy,
                  bg="#757575", fg="white", padx=20, pady=8).pack(side=tk.RIGHT)
+
+    def create_tooltip(self, widget, text):
+        """创建简单的工具提示"""
+        def on_enter(event):
+            tooltip = tk.Toplevel()
+            tooltip.wm_overrideredirect(True)
+            tooltip.wm_geometry(f"+{event.x_root+10}+{event.y_root+10}")
+            label = tk.Label(tooltip, text=text, background="lightyellow", 
+                           relief="solid", borderwidth=1, font=("Arial", 9))
+            label.pack()
+            widget.tooltip = tooltip
+        
+        def on_leave(event):
+            if hasattr(widget, 'tooltip'):
+                widget.tooltip.destroy()
+                del widget.tooltip
+        
+        widget.bind("<Enter>", on_enter)
+        widget.bind("<Leave>", on_leave)
 
 
 if __name__ == '__main__':
