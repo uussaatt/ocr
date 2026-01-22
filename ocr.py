@@ -1,4 +1,4 @@
-import requests
+﻿import requests
 import os
 import base64
 import tkinter as tk
@@ -606,12 +606,8 @@ class OCRApp:
         tk.Button(t_bar, text="✂️ 拆分A组", command=self.split_group_a_items, bg="#fffde7").pack(side=tk.LEFT, padx=2)
         # 添加工具提示
         self.create_tooltip(t_bar.winfo_children()[-1], "自动拆分所有A组且文字数>2的项目\n前两字→A组，其余字→C组")
-        tk.Button(t_bar, text="📝 批量改组", command=self.batch_change_group, bg="#e1f5fe").pack(side=tk.LEFT, padx=2)
         tk.Button(t_bar, text="📌 固定位置", command=self.save_current_order, bg="#fff3e0").pack(side=tk.LEFT, padx=2)
         tk.Button(t_bar, text="🔄 重置顺序", command=self.reset_order_by_y, bg="#f3e5f5").pack(side=tk.LEFT, padx=2)
-        tk.Button(t_bar, text="🔄 全改C组", command=self.batch_set_all_to_c, bg="#ffebee").pack(side=tk.LEFT, padx=2)
-        # 添加工具提示
-        self.create_tooltip(t_bar.winfo_children()[-1], "将所有数据项的组值都改为C组")
         tk.Button(t_bar, text="⚙️ 空格设置", command=self.show_space_settings, bg="#f3e5f5").pack(side=tk.LEFT, padx=2)
         tk.Button(t_bar, text="🎨 字体样式", command=self.show_font_style_settings, bg="#e8f5e8").pack(side=tk.LEFT, padx=2)
         
@@ -654,6 +650,10 @@ class OCRApp:
         tk.Button(r_bar, text="💾 导出 TXT", command=self.export_txt_file, bg="#e1f5fe").pack(side=tk.LEFT, padx=5, pady=2)
         tk.Button(r_bar, text="繁 -> 简", command=self.convert_to_simplified, bg="#fff0f5").pack(side=tk.LEFT, padx=2)
         tk.Button(r_bar, text="简 -> 繁", command=self.convert_to_traditional, bg="#fff0f5").pack(side=tk.LEFT, padx=2)
+        
+        # 添加空行规则说明
+        tk.Label(r_bar, text="💡", fg="blue", bg="#ddd", font=("Arial", 10)).pack(side=tk.RIGHT, padx=5)
+        self.create_tooltip(r_bar.winfo_children()[-1], "空行规则：\n1. 组值改变时添加空行\n2. 红色文字之间添加空行")
         
         # 使用ScrolledText提供更好的滚动条支持
         self.report_text = scrolledtext.ScrolledText(self.tab_report, wrap=tk.WORD, 
@@ -1171,8 +1171,24 @@ class OCRApp:
         # 默认返回B
         return 'B'
 
+    def is_text_red_color(self, text):
+        """判断文字是否为红色"""
+        for prefix, style in self.font_style_rules.items():
+            if text.lower().startswith(prefix.lower()):
+                color = style.get('color', '#000000').upper()
+                # 检查是否为红色（支持多种红色表示）
+                if color in ['#FF0000', '#RED', 'RED'] or color.startswith('#FF'):
+                    return True
+        return False
+
     def generate_report_from_tree(self):
-        """从树生成报告 - 根据组值添加空行分隔"""
+        """从树生成报告 - 根据组值和红色文字添加空行分隔
+        
+        空行添加规则：
+        1. 当组值改变时添加空行（原有规则）
+        2. 当红色文字与红色文字之间时添加空行（新规则）
+        3. 其他情况不添加空行
+        """
         self.report_text.delete("1.0", tk.END)
         content = ""
         
@@ -1184,7 +1200,7 @@ class OCRApp:
                 
             content += f"【{title}】:\n"
             
-            # 收集所有数据项的信息，包括组值
+            # 收集所有数据项的信息，包括组值和颜色信息
             items_data = []
             for cid in children:
                 vals = self.tree.item(cid, "values")
@@ -1193,29 +1209,50 @@ class OCRApp:
                     group = vals[2]  # 组值在第3列（索引2）
                     idx = int(vals[3])  # 索引在第4列（索引3）
                     is_marked = idx in self.marked_indices
+                    is_red = self.is_text_red_color(name)  # 判断是否为红色文字
                     items_data.append({
                         'name': name,
                         'group': group,
                         'is_marked': is_marked,
+                        'is_red': is_red,
                         'index': idx
                     })
             
-            # 按原始顺序处理数据，根据组值添加空行
+            # 按原始顺序处理数据，根据组值和红色文字添加空行
             prev_group = None
+            prev_is_red = None
             
             for i, item in enumerate(items_data):
                 name = item['name']
                 group = item['group']
                 is_marked = item['is_marked']
+                is_red = item['is_red']
                 
-                # 如果组值改变了，添加空行分隔（但不是第一项）
-                if prev_group is not None and prev_group != group:
+                # 添加空行的条件：
+                # 1. 组值改变了（原有规则）
+                # 2. 红色文字之间（新规则）
+                should_add_blank_line = False
+                blank_line_reason = ""
+                
+                if i > 0:  # 不是第一项
+                    # 原有规则：组值改变时添加空行
+                    if prev_group is not None and prev_group != group:
+                        should_add_blank_line = True
+                        blank_line_reason = f"组值变化: {prev_group} → {group}"
+                    
+                    # 新规则：红色文字之间添加空行
+                    elif prev_is_red and is_red:
+                        should_add_blank_line = True
+                        blank_line_reason = "红色文字之间"
+                
+                if should_add_blank_line:
                     content += "\n"
                 
-                # 简单添加项目名称，不额外添加空行
+                # 添加项目名称
                 content += f"{name}\n"
                 
                 prev_group = group
+                prev_is_red = is_red
             
             content += "\n"
         
@@ -1291,46 +1328,6 @@ class OCRApp:
         finally:
             context_menu.grab_release()
     
-    def batch_set_all_to_c(self):
-        """批量将所有数据项的组值设为C"""
-        try:
-            if self.df.empty:
-                messagebox.showinfo("提示", "没有数据可以处理！")
-                return
-            
-            # 统计当前组值分布
-            group_counts = self.df['Group'].value_counts().to_dict()
-            total_count = len(self.df)
-            
-            # 构建统计信息
-            stats_text = "、".join([f"{group}组{count}个" for group, count in group_counts.items()])
-            
-            # 确认对话框
-            if not messagebox.askyesno("确认批量修改", 
-                                     f"当前共有 {total_count} 个数据项：\n" +
-                                     f"分布：{stats_text}\n\n" +
-                                     f"确定要将所有项目的组值都改为 C 吗？\n\n" +
-                                     f"⚠️ 此操作不可撤销！"):
-                return
-            
-            # 执行批量修改
-            self.df['Group'] = 'C'
-            
-            # 刷新显示
-            self.refresh_all()
-            
-            # 显示结果
-            self.show_temp_message(f"✓ 已将 {total_count} 个项目改为C组！")
-            messagebox.showinfo("修改完成", 
-                              f"✅ 批量修改完成！\n\n" +
-                              f"📊 修改结果：\n" +
-                              f"• 处理项目数：{total_count} 个\n" +
-                              f"• 新组值：全部为C组\n\n" +
-                              f"💡 提示：所有数据项的组值已统一设为C组")
-            
-        except Exception as e:
-            messagebox.showerror("错误", f"批量修改失败：{str(e)}")
-
     def batch_set_category_group(self, category_iid, target_group):
         """批量将分类下所有数据项的组值设为指定组"""
         try:
@@ -2204,7 +2201,24 @@ class OCRApp:
 
     def refresh_all(self):
         """刷新所有"""
-        self.update_plot_view(); self.classify_and_display()
+        try:
+            # 显示处理提示
+            if hasattr(self, 'progress_label'):
+                self.progress_label.config(text="正在刷新显示...")
+                self.root.update_idletasks()
+            
+            self.update_plot_view()
+            self.classify_and_display()
+            
+            # 清除处理提示
+            if hasattr(self, 'progress_label'):
+                self.progress_label.config(text="")
+                
+        except Exception as e:
+            print(f"刷新显示时出错: {e}")
+            # 清除处理提示
+            if hasattr(self, 'progress_label'):
+                self.progress_label.config(text="")
 
     def delete_selected_data(self):
         """删除选中数据"""
@@ -6636,5 +6650,17 @@ if __name__ == '__main__':
         print("安装命令：pip install tkinterdnd2")
         root = tk.Tk()
     
-    app = OCRApp(root)
-    root.mainloop()
+    try:
+        app = OCRApp(root)
+        root.mainloop()
+    except KeyboardInterrupt:
+        print("\n程序被用户中断")
+    except Exception as e:
+        print(f"程序运行出错: {e}")
+        import traceback
+        traceback.print_exc()
+    finally:
+        try:
+            root.destroy()
+        except:
+            pass
