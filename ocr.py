@@ -613,7 +613,7 @@ class OCRApp:
         
         # 添加功能提示
         tk.Label(t_bar, text="💡", fg="blue", bg="#ddd", font=("Arial", 10)).pack(side=tk.LEFT, padx=5)
-        self.create_tooltip(t_bar.winfo_children()[-1], "右击分类目录的名称或标记列\n可批量将该分类下所有数据改为C组")
+        self.create_tooltip(t_bar.winfo_children()[-1], "右击分类目录的名称或标记列\n可批量将该分类下所有数据改为C组\n\nC组文字显示为深绿色")
         
         # 在工具栏右侧添加消息显示区域
         self.message_area = tk.Frame(t_bar, bg="#ddd")
@@ -626,6 +626,12 @@ class OCRApp:
         self.tree.heading('Status', text='标记')
         self.tree.heading('Group', text='组')
         self.tree.column('Index', width=0, stretch=False)
+        
+        # 设置列宽度 - 确保红色文字能完全显示
+        self.tree.column('#0', width=220, minwidth=150, stretch=True)  # 分类目录列，可拉伸
+        self.tree.column('Label', width=400, minwidth=300, stretch=True)  # 名称列，增加到400宽度，可拉伸
+        self.tree.column('Status', width=80, minwidth=60, stretch=False)  # 标记列，固定宽度
+        self.tree.column('Group', width=60, minwidth=50, stretch=False)  # 组列，固定宽度
         
         # 添加垂直滚动条
         tree_scrollbar = ttk.Scrollbar(self.tab_tree, orient=tk.VERTICAL, command=self.tree.yview)
@@ -1066,22 +1072,12 @@ class OCRApp:
             for idx in sorted_indices:
                 m = idx in self.marked_indices
                 label_text = self.df.loc[idx, 'Label']
+                group = self.df.loc[idx, 'Group'] if 'Group' in self.df.columns else self.get_group_by_text_color(label_text)
                 
-                # 检查是否需要应用字体样式
-                item_tags = []
-                font_style_tag = self.get_font_style_tag(label_text)
+                # 获取项目标签
+                item_tags = self.get_item_tags(label_text, group, m)
                 
-                if m and font_style_tag:
-                    # 同时有标记和字体样式，使用组合标签
-                    item_tags.append(f"marked_{font_style_tag}")
-                elif m:
-                    # 只有标记
-                    item_tags.append('marked')
-                elif font_style_tag:
-                    # 只有字体样式
-                    item_tags.append(font_style_tag)
-                
-                self.tree.insert(pid, "end", values=(label_text, "✅ 标记" if m else "", self.df.loc[idx, 'Group'] if 'Group' in self.df.columns else self.get_group_by_text_color(label_text), idx),
+                self.tree.insert(pid, "end", values=(label_text, "✅ 标记" if m else "", group, idx),
                                  tags=tuple(item_tags))
                 cat_idx.add(idx)
         rem_df = self.df.drop(list(cat_idx))
@@ -1108,27 +1104,18 @@ class OCRApp:
                 for r_idx, r in sub_sorted.iterrows():
                     m = r_idx in self.marked_indices
                     label_text = r['Label']
+                    group = r.get('Group', self.get_group_by_text_color(label_text))
                     
-                    # 检查是否需要应用字体样式
-                    item_tags = []
-                    font_style_tag = self.get_font_style_tag(label_text)
+                    # 获取项目标签
+                    item_tags = self.get_item_tags(label_text, group, m)
                     
-                    if m and font_style_tag:
-                        # 同时有标记和字体样式，使用组合标签
-                        item_tags.append(f"marked_{font_style_tag}")
-                    elif m:
-                        # 只有标记
-                        item_tags.append('marked')
-                    elif font_style_tag:
-                        # 只有字体样式
-                        item_tags.append(font_style_tag)
-                    
-                    self.tree.insert(pid, "end", values=(label_text, "✅ 标记" if m else "", r.get('Group', self.get_group_by_text_color(label_text)), r_idx),
+                    self.tree.insert(pid, "end", values=(label_text, "✅ 标记" if m else "", group, r_idx),
                                      tags=tuple(item_tags))
         self.generate_report_from_tree()
     
     def configure_font_style_tags(self):
         """配置字体样式标签"""
+        # 配置用户自定义的字体样式规则
         for prefix, style in self.font_style_rules.items():
             tag_name = f"font_style_{prefix}"
             
@@ -1152,7 +1139,70 @@ class OCRApp:
                                    foreground=style.get('color', '#000000'),
                                    font=tuple(font_config),
                                    background='#FFFACD')  # 标记背景色
+        
+        # 配置组值颜色标签
+        self.configure_group_color_tags()
     
+    def configure_group_color_tags(self):
+        """配置组值颜色标签"""
+        # A组：红色（通过字体样式规则已处理）
+        # B组：默认黑色
+        # C组：深绿色（更容易识别）
+        
+        # C组标签
+        self.tree.tag_configure('group_c', 
+                               foreground='#006600',  # 深绿色
+                               font=("Microsoft YaHei", self.current_font_size))
+        
+        # C组标记状态标签
+        self.tree.tag_configure('group_c_marked',
+                               foreground='#006600',  # 深绿色
+                               font=("Microsoft YaHei", self.current_font_size),
+                               background='#FFFACD')  # 标记背景色
+        
+        # B组标签（默认样式）
+        self.tree.tag_configure('group_b', 
+                               foreground='#000000',  # 黑色
+                               font=("Microsoft YaHei", self.current_font_size))
+        
+        # B组标记状态标签
+        self.tree.tag_configure('group_b_marked',
+                               foreground='#000000',  # 黑色
+                               font=("Microsoft YaHei", self.current_font_size),
+                               background='#FFFACD')  # 标记背景色
+    
+    def get_item_tags(self, label_text, group, is_marked):
+        """获取数据项的标签列表"""
+        item_tags = []
+        
+        # 检查字体样式标签（优先级最高）
+        font_style_tag = self.get_font_style_tag(label_text)
+        
+        if font_style_tag:
+            # 有字体样式规则，使用字体样式标签
+            if is_marked:
+                item_tags.append(f"marked_{font_style_tag}")
+            else:
+                item_tags.append(font_style_tag)
+        else:
+            # 没有字体样式规则，使用组值颜色标签
+            if group == 'C':
+                if is_marked:
+                    item_tags.append('group_c_marked')
+                else:
+                    item_tags.append('group_c')
+            elif group == 'B':
+                if is_marked:
+                    item_tags.append('group_b_marked')
+                else:
+                    item_tags.append('group_b')
+            else:  # A组或其他
+                if is_marked:
+                    item_tags.append('marked')
+                # A组通常通过字体样式规则处理，如果没有规则就用默认样式
+        
+        return item_tags
+
     def get_font_style_tag(self, text):
         """获取文本对应的字体样式标签"""
         for prefix in self.font_style_rules:
@@ -1269,8 +1319,8 @@ class OCRApp:
     def apply_font_style(self):
         """应用字体样式"""
         s = self.current_font_size
-        # 更新全局Treeview样式 (内容和标题)
-        ttk.Style().configure("Treeview", font=("Microsoft YaHei", s), rowheight=int(s * 2.5))
+        # 更新全局Treeview样式 (内容和标题) - 增加行高确保文字完全显示
+        ttk.Style().configure("Treeview", font=("Microsoft YaHei", s), rowheight=int(s * 3.0))
         ttk.Style().configure("Treeview.Heading", font=("Microsoft YaHei", s, "bold"))
         
         # 更新特定标签样式 - 标记状态只改变背景色，不改变字体和颜色
