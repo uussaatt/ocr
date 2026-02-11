@@ -413,6 +413,9 @@ class OCRApp:
         
         # 启用拖放功能
         self._setup_drag_drop()
+        
+        # 检查数据文件大小（延迟执行，避免影响启动速度）
+        self.root.after(2000, self.check_data_file_size)
 
     def setup_main_interface(self):
         """设置主界面"""
@@ -654,12 +657,15 @@ class OCRApp:
         r_bar = tk.Frame(self.tab_report, bg="#ddd")
         r_bar.pack(fill=tk.X, side=tk.TOP)
         tk.Button(r_bar, text="💾 导出 TXT", command=self.export_txt_file, bg="#e1f5fe").pack(side=tk.LEFT, padx=5, pady=2)
+        tk.Button(r_bar, text="📜 导出历史", command=self.show_export_history, bg="#f3e5f5").pack(side=tk.LEFT, padx=2, pady=2)
+        # 添加工具提示
+        self.create_tooltip(r_bar.winfo_children()[-1], "查看和管理导出的TXT文件历史记录\n• 查看、复制或保存之前导出的内容\n• 一键导出所有记录（需要密码）\n• 清空所有记录（需要密码）")
         tk.Button(r_bar, text="繁 -> 简", command=self.convert_to_simplified, bg="#fff0f5").pack(side=tk.LEFT, padx=2)
         tk.Button(r_bar, text="简 -> 繁", command=self.convert_to_traditional, bg="#fff0f5").pack(side=tk.LEFT, padx=2)
         
         # 添加空行规则说明
         tk.Label(r_bar, text="💡", fg="blue", bg="#ddd", font=("Arial", 10)).pack(side=tk.RIGHT, padx=5)
-        self.create_tooltip(r_bar.winfo_children()[-1], "空行规则：\n1. 组值改变时添加空行\n2. 红色文字之间添加空行")
+        self.create_tooltip(r_bar.winfo_children()[-1], "空行规则：\n1. 组值改变时添加空行\n2. 红色文字之间添加空行\n\n导出功能：\n• 导出TXT：保存当前报告\n• 导出历史：查看所有导出记录")
         
         # 使用ScrolledText提供更好的滚动条支持
         self.report_text = scrolledtext.ScrolledText(self.tab_report, wrap=tk.WORD, 
@@ -2793,11 +2799,808 @@ class OCRApp:
 
     def export_txt_file(self):
         """导出文本文件"""
-        raw = self.report_text.get("1.0", tk.END);
-        path = filedialog.asksaveasfilename(defaultextension=".txt")
+        raw = self.report_text.get("1.0", tk.END)
+        if not raw.strip():
+            messagebox.showwarning("提示", "没有内容可以导出！")
+            return
+            
+        path = filedialog.asksaveasfilename(
+            defaultextension=".txt",
+            filetypes=[("文本文件", "*.txt"), ("所有文件", "*.*")],
+            title="导出文本报告"
+        )
+        
         if path:
-            filtered = [l for l in raw.splitlines() if not (l.strip().startswith("【") and "】" in l)]
-            with open(path, "w", encoding="utf-8") as f: f.write("\n".join(filtered).strip())
+            try:
+                # 过滤掉分类标题行
+                filtered = [l for l in raw.splitlines() if not (l.strip().startswith("【") and "】" in l)]
+                content = "\n".join(filtered).strip()
+                
+                # 写入文件
+                with open(path, "w", encoding="utf-8") as f:
+                    f.write(content)
+                
+                # 保存导出记录
+                self.save_export_record(path, content)
+                
+                # 显示成功消息
+                file_size = len(content.encode('utf-8'))
+                line_count = len(filtered)
+                
+                # 获取历史记录状态
+                export_history = self.store.get('export_history', [])
+                current_limit = self.store.get('export_history_limit', 500)
+                
+                messagebox.showinfo("导出成功", 
+                                  f"✅ 文本报告已导出！\n\n" +
+                                  f"📁 文件路径：{path}\n" +
+                                  f"📊 统计信息：\n" +
+                                  f"• 行数：{line_count} 行\n" +
+                                  f"• 大小：{file_size} 字节\n\n" +
+                                  f"📜 历史记录：{len(export_history)}/{current_limit}\n" +
+                                  f"💡 导出内容已保存到软件历史记录中")
+                
+            except Exception as e:
+                messagebox.showerror("导出失败", f"导出文件时出错：{str(e)}")
+    
+    def save_export_record(self, file_path, content):
+        """保存导出记录"""
+        try:
+            # 获取现有的导出历史记录
+            export_history = self.store.get('export_history', [])
+            
+            # 获取历史记录限制数量（默认500）
+            max_records = self.store.get('export_history_limit', 500)
+            
+            # 创建新的导出记录
+            export_record = {
+                'timestamp': datetime.now().isoformat(),
+                'file_path': file_path,
+                'file_name': os.path.basename(file_path),
+                'content': content,
+                'line_count': len([l for l in content.splitlines() if l.strip()]),
+                'char_count': len(content),
+                'size_bytes': len(content.encode('utf-8'))
+            }
+            
+            # 检查是否达到记录限制
+            if len(export_history) >= max_records:
+                # 提示用户记录已满
+                self.show_export_limit_warning(len(export_history), max_records)
+                
+                # 删除最旧的记录为新记录腾出空间
+                export_history = export_history[:max_records-1]
+            
+            # 添加到历史记录开头
+            export_history.insert(0, export_record)
+            
+            # 保存到数据存储
+            self.store.set('export_history', export_history)
+            
+        except Exception as e:
+            print(f"保存导出记录失败: {e}")
+    
+    def check_data_file_size(self):
+        """检查数据文件大小并提供管理建议"""
+        try:
+            data_file_path = self.data_file
+            if not data_file_path.exists():
+                return
+            
+            file_size = data_file_path.stat().st_size
+            file_size_mb = file_size / (1024 * 1024)
+            
+            # 获取导出历史记录信息
+            export_history = self.store.get('export_history', [])
+            export_count = len(export_history)
+            
+            # 计算导出历史记录占用的大小（估算）
+            export_size = 0
+            for record in export_history:
+                export_size += len(record.get('content', '').encode('utf-8'))
+                export_size += 500  # 估算元数据大小
+            
+            export_size_mb = export_size / (1024 * 1024)
+            
+            # 设置警告阈值
+            warning_size_mb = 50  # 50MB警告
+            critical_size_mb = 100  # 100MB严重警告
+            
+            if file_size_mb > critical_size_mb:
+                self.show_file_size_warning(file_size_mb, export_count, export_size_mb, "critical")
+            elif file_size_mb > warning_size_mb:
+                self.show_file_size_warning(file_size_mb, export_count, export_size_mb, "warning")
+            
+            return {
+                'total_size_mb': file_size_mb,
+                'export_count': export_count,
+                'export_size_mb': export_size_mb,
+                'other_size_mb': file_size_mb - export_size_mb
+            }
+            
+        except Exception as e:
+            print(f"检查数据文件大小失败: {e}")
+            return None
+    
+    def show_file_size_warning(self, file_size_mb, export_count, export_size_mb, level):
+        """显示文件大小警告"""
+        try:
+            if level == "critical":
+                title = "⚠️ 数据文件过大警告"
+                icon = "warning"
+                bg_color = "#ffebee"
+            else:
+                title = "💡 数据文件大小提醒"
+                icon = "info"
+                bg_color = "#fff3e0"
+            
+            message = (f"📊 数据文件大小统计：\n\n"
+                      f"• 总文件大小：{file_size_mb:.1f} MB\n"
+                      f"• 导出历史记录：{export_count} 个\n"
+                      f"• 导出记录占用：{export_size_mb:.1f} MB\n"
+                      f"• 其他数据占用：{file_size_mb - export_size_mb:.1f} MB\n\n")
+            
+            if level == "critical":
+                message += ("⚠️ 数据文件已超过 100MB，可能影响软件性能！\n\n"
+                           "建议操作：\n"
+                           "• 清理部分导出历史记录\n"
+                           "• 导出重要记录后清空历史\n"
+                           "• 调整历史记录数量限制")
+            else:
+                message += ("💡 数据文件已超过 50MB，建议适当清理\n\n"
+                           "可选操作：\n"
+                           "• 查看导出历史记录管理\n"
+                           "• 考虑清理旧的导出记录")
+            
+            result = messagebox.askyesnocancel(title, message + "\n\n是否现在打开导出历史管理？", icon=icon)
+            
+            if result is True:
+                # 用户选择打开导出历史管理
+                self.show_export_history()
+            elif result is False:
+                # 用户选择查看详细信息
+                self.show_data_file_details()
+                
+        except Exception as e:
+            print(f"显示文件大小警告失败: {e}")
+    
+    def show_data_file_details(self):
+        """显示数据文件详细信息"""
+        try:
+            # 创建详细信息窗口
+            details_window = self.create_popup_window(self.root, "数据文件详细信息", "data_file_details", 600, 500)
+            
+            # 标题
+            tk.Label(details_window, text="📊 数据文件详细信息", 
+                    font=("Microsoft YaHei", 14, "bold"), fg="#333").pack(pady=(20, 15))
+            
+            # 获取详细信息
+            file_info = self.check_data_file_size()
+            if not file_info:
+                tk.Label(details_window, text="无法获取文件信息", fg="red").pack(pady=20)
+                return
+            
+            # 信息显示区域
+            info_frame = tk.LabelFrame(details_window, text="文件大小分析", padx=20, pady=15)
+            info_frame.pack(fill=tk.BOTH, expand=True, padx=20, pady=10)
+            
+            # 创建信息文本
+            info_text = scrolledtext.ScrolledText(info_frame, height=15, width=60, 
+                                                font=("Microsoft YaHei", 10), wrap=tk.WORD)
+            info_text.pack(fill=tk.BOTH, expand=True)
+            
+            # 构建详细信息
+            details = f"数据文件路径：{self.data_file}\n\n"
+            details += f"📊 大小统计：\n"
+            details += f"• 总文件大小：{file_info['total_size_mb']:.2f} MB\n"
+            details += f"• 导出历史记录：{file_info['export_count']} 个\n"
+            details += f"• 导出记录占用：{file_info['export_size_mb']:.2f} MB ({file_info['export_size_mb']/file_info['total_size_mb']*100:.1f}%)\n"
+            details += f"• 其他数据占用：{file_info['other_size_mb']:.2f} MB ({file_info['other_size_mb']/file_info['total_size_mb']*100:.1f}%)\n\n"
+            
+            details += f"💡 优化建议：\n"
+            if file_info['export_size_mb'] > 20:
+                details += f"• 导出历史记录占用较大，建议清理旧记录\n"
+            if file_info['total_size_mb'] > 50:
+                details += f"• 文件总大小较大，可能影响启动速度\n"
+            if file_info['export_count'] > 200:
+                details += f"• 导出记录数量较多，建议调整数量限制\n"
+            
+            details += f"\n🔧 管理操作：\n"
+            details += f"• 点击下方按钮可以进行相应的管理操作\n"
+            details += f"• 建议定期清理不需要的历史记录\n"
+            details += f"• 可以导出重要记录后清空历史"
+            
+            info_text.insert("1.0", details)
+            info_text.config(state=tk.DISABLED)
+            
+            # 操作按钮
+            btn_frame = tk.Frame(details_window)
+            btn_frame.pack(fill=tk.X, padx=20, pady=20)
+            
+            tk.Button(btn_frame, text="📜 管理导出历史", command=self.show_export_history,
+                     bg="#4CAF50", fg="white", font=("Microsoft YaHei", 10),
+                     padx=15, pady=8).pack(side=tk.LEFT, padx=5)
+            
+            tk.Button(btn_frame, text="⚙️ 数量设置", command=self.show_export_limit_settings,
+                     bg="#FF9800", fg="white", font=("Microsoft YaHei", 10),
+                     padx=15, pady=8).pack(side=tk.LEFT, padx=5)
+            
+            tk.Button(btn_frame, text="🔄 刷新信息", 
+                     command=lambda: [details_window.destroy(), self.show_data_file_details()],
+                     bg="#2196F3", fg="white", font=("Microsoft YaHei", 10),
+                     padx=15, pady=8).pack(side=tk.LEFT, padx=5)
+            
+            tk.Button(btn_frame, text="❌ 关闭", command=details_window.destroy,
+                     bg="#757575", fg="white", font=("Microsoft YaHei", 10),
+                     padx=15, pady=8).pack(side=tk.RIGHT, padx=5)
+            
+        except Exception as e:
+            messagebox.showerror("错误", f"显示文件详细信息失败：{str(e)}")
+    
+    def show_export_limit_warning(self, current_count, max_count):
+        """显示导出记录数量限制警告"""
+        try:
+            result = messagebox.askyesnocancel(
+                "导出历史记录已满",
+                f"📊 当前导出历史记录：{current_count}/{max_count}\n\n" +
+                f"历史记录已达到上限！新的导出记录将会覆盖最旧的记录。\n\n" +
+                f"🔧 您可以选择：\n" +
+                f"• 是：继续导出并覆盖最旧记录\n" +
+                f"• 否：调整历史记录数量限制\n" +
+                f"• 取消：取消本次导出操作",
+                icon='warning'
+            )
+            
+            if result is True:
+                # 用户选择继续
+                return True
+            elif result is False:
+                # 用户选择调整限制
+                self.show_export_limit_settings()
+                return False
+            else:
+                # 用户取消
+                return False
+                
+        except Exception as e:
+            print(f"显示导出限制警告失败: {e}")
+            return True
+    
+    def show_export_limit_settings(self):
+        """显示导出历史记录数量设置"""
+        try:
+            # 创建设置窗口
+            settings_window = self.create_popup_window(self.root, "导出历史记录设置", "export_limit_settings", 500, 400)
+            
+            # 标题
+            tk.Label(settings_window, text="📊 导出历史记录数量设置", 
+                    font=("Microsoft YaHei", 14, "bold"), fg="#333").pack(pady=(20, 15))
+            
+            # 当前状态
+            current_count = len(self.store.get('export_history', []))
+            current_limit = self.store.get('export_history_limit', 500)
+            
+            status_frame = tk.Frame(settings_window, bg="#f0f0f0", relief=tk.RAISED, bd=1)
+            status_frame.pack(fill=tk.X, padx=20, pady=10)
+            
+            status_text = f"📈 当前状态：已保存 {current_count} 个记录，限制 {current_limit} 个"
+            tk.Label(status_frame, text=status_text, bg="#f0f0f0", 
+                    font=("Microsoft YaHei", 11)).pack(pady=10)
+            
+            # 设置区域
+            settings_frame = tk.LabelFrame(settings_window, text="设置选项", padx=20, pady=15)
+            settings_frame.pack(fill=tk.X, padx=20, pady=10)
+            
+            # 数量限制设置
+            limit_frame = tk.Frame(settings_frame)
+            limit_frame.pack(fill=tk.X, pady=5)
+            
+            tk.Label(limit_frame, text="历史记录数量限制：", 
+                    font=("Microsoft YaHei", 10)).pack(side=tk.LEFT)
+            
+            limit_var = tk.StringVar(value=str(current_limit))
+            limit_entry = tk.Entry(limit_frame, textvariable=limit_var, 
+                                  font=("Arial", 11), width=10, justify=tk.CENTER)
+            limit_entry.pack(side=tk.LEFT, padx=10)
+            
+            tk.Label(limit_frame, text="个", font=("Microsoft YaHei", 10)).pack(side=tk.LEFT)
+            
+            # 预设按钮
+            preset_frame = tk.Frame(settings_frame)
+            preset_frame.pack(fill=tk.X, pady=10)
+            
+            tk.Label(preset_frame, text="快速设置：", font=("Microsoft YaHei", 10)).pack(anchor=tk.W)
+            
+            preset_btn_frame = tk.Frame(preset_frame)
+            preset_btn_frame.pack(fill=tk.X, pady=5)
+            
+            presets = [100, 200, 500, 1000, 2000]
+            for preset in presets:
+                tk.Button(preset_btn_frame, text=str(preset), 
+                         command=lambda p=preset: limit_var.set(str(p)),
+                         width=8, font=("Arial", 9)).pack(side=tk.LEFT, padx=2)
+            
+            # 提示信息
+            hint_text = ("💡 提示：\n"
+                        "• 建议设置 100-2000 个记录\n"
+                        "• 记录过多可能影响软件启动速度\n"
+                        "• 设置为 0 表示不限制数量（不推荐）")
+            
+            tk.Label(settings_frame, text=hint_text, font=("Arial", 9), 
+                    fg="gray", justify=tk.LEFT).pack(anchor=tk.W, pady=10)
+            
+            # 按钮区域
+            btn_frame = tk.Frame(settings_window)
+            btn_frame.pack(fill=tk.X, padx=20, pady=20)
+            
+            def save_settings():
+                """保存设置"""
+                try:
+                    new_limit = int(limit_var.get())
+                    if new_limit < 0:
+                        messagebox.showerror("输入错误", "记录数量不能为负数！", parent=settings_window)
+                        return
+                    
+                    if new_limit > 10000:
+                        if not messagebox.askyesno("确认设置", 
+                                                 f"设置 {new_limit} 个记录可能会影响软件性能，确定要设置吗？", 
+                                                 parent=settings_window):
+                            return
+                    
+                    # 保存新的限制
+                    self.store.set('export_history_limit', new_limit)
+                    
+                    # 如果当前记录数超过新限制，询问是否删除多余记录
+                    if current_count > new_limit > 0:
+                        if messagebox.askyesno("记录超限", 
+                                             f"当前有 {current_count} 个记录，超过新限制 {new_limit} 个。\n" +
+                                             f"是否删除最旧的 {current_count - new_limit} 个记录？", 
+                                             parent=settings_window):
+                            export_history = self.store.get('export_history', [])
+                            export_history = export_history[:new_limit]
+                            self.store.set('export_history', export_history)
+                    
+                    messagebox.showinfo("设置成功", 
+                                      f"✅ 导出历史记录限制已设置为 {new_limit} 个", 
+                                      parent=settings_window)
+                    settings_window.destroy()
+                    
+                except ValueError:
+                    messagebox.showerror("输入错误", "请输入有效的数字！", parent=settings_window)
+                except Exception as e:
+                    messagebox.showerror("设置失败", f"保存设置时出错：{str(e)}", parent=settings_window)
+            
+            def clear_history():
+                """清空历史记录"""
+                # 使用统一的密码验证清空功能
+                self.clear_all_with_password()
+                settings_window.destroy()
+            
+            tk.Button(btn_frame, text="保存设置", command=save_settings,
+                     bg="#4CAF50", fg="white", font=("Microsoft YaHei", 10, "bold"),
+                     padx=20, pady=8).pack(side=tk.RIGHT, padx=5)
+            
+            tk.Button(btn_frame, text="清空历史", command=clear_history,
+                     bg="#f44336", fg="white", font=("Microsoft YaHei", 10),
+                     padx=20, pady=8).pack(side=tk.RIGHT, padx=5)
+            
+            tk.Button(btn_frame, text="取消", command=settings_window.destroy,
+                     bg="#757575", fg="white", font=("Microsoft YaHei", 10),
+                     padx=20, pady=8).pack(side=tk.RIGHT, padx=5)
+            
+            # 焦点设置
+            limit_entry.focus_set()
+            limit_entry.select_range(0, tk.END)
+            
+        except Exception as e:
+            messagebox.showerror("错误", f"显示设置窗口失败：{str(e)}")
+    
+    def verify_admin_password(self, parent_window=None, title="密码验证", message="请输入管理员密码："):
+        """验证管理员密码"""
+        try:
+            # 创建密码输入对话框
+            password_dialog = tk.Toplevel(parent_window or self.root)
+            password_dialog.title(title)
+            password_dialog.geometry("400x250")
+            password_dialog.transient(parent_window or self.root)
+            password_dialog.grab_set()
+            
+            # 居中显示
+            password_dialog.update_idletasks()
+            x = (password_dialog.winfo_screenwidth() // 2) - (400 // 2)
+            y = (password_dialog.winfo_screenheight() // 2) - (250 // 2)
+            password_dialog.geometry(f"400x250+{x}+{y}")
+            
+            # 结果变量
+            result = {'verified': False}
+            
+            # 标题
+            tk.Label(password_dialog, text="🔐 " + title, 
+                    font=("Microsoft YaHei", 14, "bold"), fg="#333").pack(pady=(20, 15))
+            
+            # 消息
+            tk.Label(password_dialog, text=message, 
+                    font=("Microsoft YaHei", 11)).pack(pady=10)
+            
+            # 密码输入框
+            password_frame = tk.Frame(password_dialog)
+            password_frame.pack(pady=15)
+            
+            tk.Label(password_frame, text="密码：", font=("Microsoft YaHei", 10)).pack(side=tk.LEFT)
+            password_var = tk.StringVar()
+            password_entry = tk.Entry(password_frame, textvariable=password_var, 
+                                    show="*", font=("Arial", 12), width=15)
+            password_entry.pack(side=tk.LEFT, padx=10)
+            
+            # 错误提示
+            error_label = tk.Label(password_dialog, text="", fg="red", font=("Arial", 9))
+            error_label.pack(pady=5)
+            
+            # 按钮框架
+            btn_frame = tk.Frame(password_dialog)
+            btn_frame.pack(pady=20)
+            
+            def verify_password():
+                """验证密码"""
+                entered_password = password_var.get()
+                if entered_password == "000":
+                    result['verified'] = True
+                    password_dialog.destroy()
+                else:
+                    error_label.config(text="❌ 密码错误，请重试")
+                    password_entry.delete(0, tk.END)
+                    password_entry.focus_set()
+            
+            def cancel():
+                """取消"""
+                result['verified'] = False
+                password_dialog.destroy()
+            
+            tk.Button(btn_frame, text="确定", command=verify_password,
+                     bg="#4CAF50", fg="white", font=("Microsoft YaHei", 10, "bold"),
+                     padx=20, pady=8).pack(side=tk.LEFT, padx=10)
+            
+            tk.Button(btn_frame, text="取消", command=cancel,
+                     bg="#757575", fg="white", font=("Microsoft YaHei", 10),
+                     padx=20, pady=8).pack(side=tk.LEFT, padx=10)
+            
+            # 绑定回车键
+            password_entry.bind("<Return>", lambda e: verify_password())
+            password_entry.focus_set()
+            
+            # 等待对话框关闭
+            password_dialog.wait_window()
+            
+            return result['verified']
+            
+        except Exception as e:
+            print(f"密码验证失败: {e}")
+            return False
+    
+    def export_all_history(self):
+        """一键导出所有历史记录（需要密码验证）"""
+        try:
+            # 密码验证
+            if not self.verify_admin_password(title="导出所有历史记录", 
+                                            message="此操作将导出所有历史记录到一个文件\n请输入管理员密码："):
+                return
+            
+            export_history = self.store.get('export_history', [])
+            if not export_history:
+                messagebox.showinfo("提示", "没有历史记录可以导出")
+                return
+            
+            # 选择保存位置
+            from datetime import datetime
+            default_filename = f"导出历史记录_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
+            
+            path = filedialog.asksaveasfilename(
+                defaultextension=".txt",
+                filetypes=[("文本文件", "*.txt"), ("所有文件", "*.*")],
+                title="导出所有历史记录",
+                initialvalue=default_filename
+            )
+            
+            if not path:
+                return
+            
+            # 生成导出内容
+            export_content = self.generate_all_history_content(export_history)
+            
+            # 写入文件
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(export_content)
+            
+            # 显示成功消息
+            file_size = len(export_content.encode('utf-8'))
+            messagebox.showinfo("导出成功", 
+                              f"✅ 所有历史记录已导出！\n\n" +
+                              f"📁 文件路径：{path}\n" +
+                              f"📊 统计信息：\n" +
+                              f"• 记录数量：{len(export_history)} 个\n" +
+                              f"• 文件大小：{file_size} 字节\n\n" +
+                              f"💡 包含所有历史记录的完整内容和元数据")
+            
+        except Exception as e:
+            messagebox.showerror("导出失败", f"导出所有历史记录时出错：{str(e)}")
+    
+    def generate_all_history_content(self, export_history):
+        """生成所有历史记录的导出内容"""
+        content = "=" * 60 + "\n"
+        content += "OCR 导出历史记录汇总\n"
+        content += f"导出时间：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
+        content += f"记录数量：{len(export_history)} 个\n"
+        content += "=" * 60 + "\n\n"
+        
+        for i, record in enumerate(export_history, 1):
+            timestamp = datetime.fromisoformat(record['timestamp']).strftime("%Y-%m-%d %H:%M:%S")
+            
+            content += f"【记录 {i}】\n"
+            content += f"导出时间：{timestamp}\n"
+            content += f"文件名：{record['file_name']}\n"
+            content += f"文件路径：{record['file_path']}\n"
+            content += f"行数：{record['line_count']} 行\n"
+            content += f"字符数：{record['char_count']} 个\n"
+            content += f"文件大小：{record['size_bytes']} 字节\n"
+            content += "-" * 40 + "\n"
+            content += "内容：\n"
+            content += record['content']
+            content += "\n" + "=" * 60 + "\n\n"
+        
+        return content
+    
+    def clear_all_with_password(self):
+        """清空所有历史记录（需要密码验证）"""
+        try:
+            export_history = self.store.get('export_history', [])
+            if not export_history:
+                messagebox.showinfo("提示", "没有历史记录需要清空")
+                return
+            
+            # 密码验证
+            if not self.verify_admin_password(title="清空所有历史记录", 
+                                            message=f"此操作将永久删除所有 {len(export_history)} 个历史记录\n请输入管理员密码："):
+                return
+            
+            # 二次确认
+            if not messagebox.askyesno("最终确认", 
+                                     f"⚠️ 警告：即将永久删除所有 {len(export_history)} 个导出历史记录！\n\n" +
+                                     f"此操作不可撤销，确定要继续吗？\n\n" +
+                                     f"建议：删除前可以先使用'一键导出'功能备份所有记录。"):
+                return
+            
+            # 清空历史记录
+            self.store.set('export_history', [])
+            
+            messagebox.showinfo("清空成功", 
+                              f"✅ 已成功清空所有 {len(export_history)} 个导出历史记录")
+            
+            # 如果当前有历史记录窗口打开，关闭它
+            # 这里可以添加刷新逻辑，但为了简单起见，提示用户重新打开
+            
+        except Exception as e:
+            messagebox.showerror("清空失败", f"清空历史记录时出错：{str(e)}")
+
+    def show_export_history(self):
+        """显示导出历史记录"""
+        try:
+            export_history = self.store.get('export_history', [])
+            
+            if not export_history:
+                messagebox.showinfo("导出历史", "暂无导出历史记录")
+                return
+            
+            # 创建历史记录窗口
+            history_window = self.create_popup_window(self.root, "导出历史记录", "export_history", 800, 600)
+            
+            # 标题
+            current_limit = self.store.get('export_history_limit', 500)
+            file_info = self.check_data_file_size()
+            
+            if file_info:
+                title_text = f"📜 导出历史记录 ({len(export_history)}/{current_limit}) - 文件大小: {file_info['total_size_mb']:.1f}MB"
+            else:
+                title_text = f"📜 导出历史记录 ({len(export_history)}/{current_limit})"
+                
+            tk.Label(history_window, text=title_text, 
+                    font=("Microsoft YaHei", 14, "bold"), fg="#333").pack(pady=(20, 10))
+            
+            # 创建框架
+            main_frame = tk.Frame(history_window)
+            main_frame.pack(fill=tk.BOTH, expand=True, padx=20, pady=10)
+            
+            # 左侧：历史记录列表
+            left_frame = tk.Frame(main_frame)
+            left_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+            
+            tk.Label(left_frame, text="历史记录列表：", font=("Microsoft YaHei", 11, "bold")).pack(anchor=tk.W)
+            
+            # 创建列表框
+            list_frame = tk.Frame(left_frame)
+            list_frame.pack(fill=tk.BOTH, expand=True, pady=5)
+            
+            history_listbox = tk.Listbox(list_frame, font=("Microsoft YaHei", 9))
+            history_scrollbar = ttk.Scrollbar(list_frame, orient=tk.VERTICAL, command=history_listbox.yview)
+            history_listbox.configure(yscrollcommand=history_scrollbar.set)
+            
+            history_listbox.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+            history_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+            
+            # 右侧：详细信息和操作
+            right_frame = tk.Frame(main_frame, width=300)
+            right_frame.pack(side=tk.RIGHT, fill=tk.Y, padx=(20, 0))
+            right_frame.pack_propagate(False)
+            
+            tk.Label(right_frame, text="详细信息：", font=("Microsoft YaHei", 11, "bold")).pack(anchor=tk.W)
+            
+            # 详细信息显示区域
+            info_text = scrolledtext.ScrolledText(right_frame, height=15, width=35, 
+                                                font=("Microsoft YaHei", 9), wrap=tk.WORD)
+            info_text.pack(fill=tk.BOTH, expand=True, pady=5)
+            
+            # 操作按钮
+            btn_frame = tk.Frame(right_frame)
+            btn_frame.pack(fill=tk.X, pady=10)
+            
+            def view_content():
+                """查看内容"""
+                selection = history_listbox.curselection()
+                if not selection:
+                    messagebox.showwarning("提示", "请先选择一个记录", parent=history_window)
+                    return
+                
+                record = export_history[selection[0]]
+                self.show_export_content(record, history_window)
+            
+            def delete_record():
+                """删除记录"""
+                selection = history_listbox.curselection()
+                if not selection:
+                    messagebox.showwarning("提示", "请先选择一个记录", parent=history_window)
+                    return
+                
+                if messagebox.askyesno("确认删除", "确定要删除这个导出记录吗？", parent=history_window):
+                    del export_history[selection[0]]
+                    self.store.set('export_history', export_history)
+                    refresh_list()
+            
+            def clear_all():
+                """清空所有记录"""
+                if messagebox.askyesno("确认清空", "确定要清空所有导出记录吗？", parent=history_window):
+                    self.store.set('export_history', [])
+                    history_window.destroy()
+                    messagebox.showinfo("成功", "已清空所有导出记录")
+            
+            tk.Button(btn_frame, text="查看内容", command=view_content, 
+                     bg="#4CAF50", fg="white", font=("Microsoft YaHei", 9)).pack(fill=tk.X, pady=2)
+            tk.Button(btn_frame, text="删除记录", command=delete_record, 
+                     bg="#f44336", fg="white", font=("Microsoft YaHei", 9)).pack(fill=tk.X, pady=2)
+            tk.Button(btn_frame, text="一键导出", command=self.export_all_history, 
+                     bg="#2196F3", fg="white", font=("Microsoft YaHei", 9)).pack(fill=tk.X, pady=2)
+            tk.Button(btn_frame, text="数量设置", command=self.show_export_limit_settings, 
+                     bg="#FF9800", fg="white", font=("Microsoft YaHei", 9)).pack(fill=tk.X, pady=2)
+            tk.Button(btn_frame, text="文件信息", command=self.show_data_file_details, 
+                     bg="#9C27B0", fg="white", font=("Microsoft YaHei", 9)).pack(fill=tk.X, pady=2)
+            tk.Button(btn_frame, text="清空所有", command=self.clear_all_with_password, 
+                     bg="#757575", fg="white", font=("Microsoft YaHei", 9)).pack(fill=tk.X, pady=2)
+            
+            def refresh_list():
+                """刷新列表"""
+                history_listbox.delete(0, tk.END)
+                for i, record in enumerate(export_history):
+                    timestamp = datetime.fromisoformat(record['timestamp']).strftime("%Y-%m-%d %H:%M:%S")
+                    display_text = f"{timestamp} - {record['file_name']}"
+                    history_listbox.insert(tk.END, display_text)
+            
+            def on_select(event):
+                """选择记录时显示详细信息"""
+                selection = history_listbox.curselection()
+                if selection:
+                    record = export_history[selection[0]]
+                    timestamp = datetime.fromisoformat(record['timestamp']).strftime("%Y-%m-%d %H:%M:%S")
+                    
+                    info = f"导出时间：{timestamp}\n"
+                    info += f"文件名：{record['file_name']}\n"
+                    info += f"文件路径：{record['file_path']}\n"
+                    info += f"行数：{record['line_count']} 行\n"
+                    info += f"字符数：{record['char_count']} 个\n"
+                    info += f"文件大小：{record['size_bytes']} 字节\n\n"
+                    info += "内容预览：\n"
+                    info += "=" * 30 + "\n"
+                    
+                    # 显示前10行内容作为预览
+                    content_lines = record['content'].splitlines()
+                    preview_lines = content_lines[:10]
+                    info += "\n".join(preview_lines)
+                    
+                    if len(content_lines) > 10:
+                        info += f"\n... 还有 {len(content_lines) - 10} 行"
+                    
+                    info_text.delete("1.0", tk.END)
+                    info_text.insert("1.0", info)
+            
+            history_listbox.bind('<<ListboxSelect>>', on_select)
+            
+            # 初始化列表
+            refresh_list()
+            
+        except Exception as e:
+            messagebox.showerror("错误", f"显示导出历史失败：{str(e)}")
+    
+    def show_export_content(self, record, parent_window):
+        """显示导出内容的完整窗口"""
+        try:
+            # 创建内容查看窗口
+            content_window = tk.Toplevel(parent_window)
+            content_window.title(f"查看导出内容 - {record['file_name']}")
+            content_window.geometry("800x600")
+            content_window.transient(parent_window)
+            
+            # 居中显示
+            content_window.update_idletasks()
+            x = (content_window.winfo_screenwidth() // 2) - (800 // 2)
+            y = (content_window.winfo_screenheight() // 2) - (600 // 2)
+            content_window.geometry(f"800x600+{x}+{y}")
+            
+            # 标题信息
+            info_frame = tk.Frame(content_window, bg="#f0f0f0")
+            info_frame.pack(fill=tk.X, padx=10, pady=10)
+            
+            timestamp = datetime.fromisoformat(record['timestamp']).strftime("%Y-%m-%d %H:%M:%S")
+            info_text = f"📄 {record['file_name']} | 🕒 {timestamp} | 📊 {record['line_count']}行 {record['char_count']}字符"
+            tk.Label(info_frame, text=info_text, bg="#f0f0f0", 
+                    font=("Microsoft YaHei", 10)).pack(pady=5)
+            
+            # 工具栏
+            toolbar = tk.Frame(content_window, bg="#e0e0e0")
+            toolbar.pack(fill=tk.X)
+            
+            def copy_content():
+                """复制内容到剪贴板"""
+                try:
+                    content_window.clipboard_clear()
+                    content_window.clipboard_append(record['content'])
+                    messagebox.showinfo("成功", "内容已复制到剪贴板", parent=content_window)
+                except Exception as e:
+                    messagebox.showerror("错误", f"复制失败：{str(e)}", parent=content_window)
+            
+            def save_as():
+                """另存为"""
+                try:
+                    path = filedialog.asksaveasfilename(
+                        parent=content_window,
+                        defaultextension=".txt",
+                        filetypes=[("文本文件", "*.txt"), ("所有文件", "*.*")],
+                        title="另存为",
+                        initialvalue=record['file_name']
+                    )
+                    
+                    if path:
+                        with open(path, "w", encoding="utf-8") as f:
+                            f.write(record['content'])
+                        messagebox.showinfo("成功", f"文件已保存到：{path}", parent=content_window)
+                        
+                except Exception as e:
+                    messagebox.showerror("错误", f"保存失败：{str(e)}", parent=content_window)
+            
+            tk.Button(toolbar, text="📋 复制内容", command=copy_content, 
+                     bg="#4CAF50", fg="white", padx=10, pady=5).pack(side=tk.LEFT, padx=5, pady=5)
+            tk.Button(toolbar, text="💾 另存为", command=save_as, 
+                     bg="#2196F3", fg="white", padx=10, pady=5).pack(side=tk.LEFT, padx=5, pady=5)
+            tk.Button(toolbar, text="❌ 关闭", command=content_window.destroy, 
+                     bg="#757575", fg="white", padx=10, pady=5).pack(side=tk.RIGHT, padx=5, pady=5)
+            
+            # 内容显示区域
+            content_text = scrolledtext.ScrolledText(content_window, wrap=tk.WORD, 
+                                                   font=("Microsoft YaHei", 11))
+            content_text.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+            
+            # 插入内容
+            content_text.insert("1.0", record['content'])
+            content_text.config(state=tk.DISABLED)  # 设为只读
+            
+        except Exception as e:
+            messagebox.showerror("错误", f"显示内容失败：{str(e)}", parent=parent_window)
 
     def _setup_drag_drop(self):
         """设置拖放功能"""
