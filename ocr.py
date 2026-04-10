@@ -1217,23 +1217,29 @@ class OCRApp:
         return None
     
     def get_group_by_text_color(self, text):
-        """根据文字颜色获取组值"""
+        """根据字体样式规则获取组值"""
         for prefix, style in self.font_style_rules.items():
             if text.lower().startswith(prefix.lower()):
-                color = style.get('color', '#000000').upper()
-                # 检查是否为红色（支持多种红色表示）
-                if color in ['#FF0000', '#RED', 'RED'] or color.startswith('#FF'):
+                # 优先使用规则中明确指定的 target_group
+                if 'target_group' in style and style['target_group'] in ('A', 'B', 'C'):
+                    return style['target_group']
+                # 兼容旧逻辑：红色自动为 A 组
+                if self._is_red_color(style.get('color', '#000000')):
                     return 'A'
-        # 默认返回B
         return 'B'
+
+    def _is_red_color(self, color_str):
+        """判断颜色是否为红色（精确匹配）"""
+        c = color_str.strip().upper()
+        # 精确匹配常见红色值
+        red_colors = {'#FF0000', '#FF0000FF', 'RED', '#F00', '#CC0000', '#DC143C', '#B22222', '#8B0000'}
+        return c in red_colors
 
     def is_text_red_color(self, text):
         """判断文字是否为红色"""
         for prefix, style in self.font_style_rules.items():
             if text.lower().startswith(prefix.lower()):
-                color = style.get('color', '#000000').upper()
-                # 检查是否为红色（支持多种红色表示）
-                if color in ['#FF0000', '#RED', 'RED'] or color.startswith('#FF'):
+                if self._is_red_color(style.get('color', '#000000')):
                     return True
         return False
 
@@ -7407,6 +7413,19 @@ class OCRApp:
         tk.Button(color_frame, text="选择颜色", command=choose_color,
                  bg="#9C27B0", fg="white", padx=10, pady=5).pack(side=tk.LEFT, padx=10)
         
+        # 自动分组设置
+        group_frame = tk.LabelFrame(editor_window, text="自动分组", padx=10, pady=10)
+        group_frame.pack(fill=tk.X, padx=20, pady=5)
+        
+        tk.Label(group_frame, text="匹配此前缀的条目自动归入：").grid(row=0, column=0, sticky=tk.W)
+        target_group_var = tk.StringVar(value='auto')
+        group_combo = ttk.Combobox(group_frame, textvariable=target_group_var,
+                                   values=['auto（根据颜色自动判断）', 'A', 'B', 'C'],
+                                   state="readonly", width=25)
+        group_combo.grid(row=0, column=1, sticky=tk.W, padx=10)
+        tk.Label(group_frame, text="auto = 红色→A，其他→B", 
+                font=("Arial", 9), fg="gray").grid(row=1, column=0, columnspan=2, sticky=tk.W, pady=3)
+        
         # 描述
         desc_frame = tk.Frame(editor_window, padx=20)
         desc_frame.pack(fill=tk.X, pady=5)
@@ -7424,12 +7443,15 @@ class OCRApp:
             font_weight_var.set(style.get('font_weight', 'normal'))
             color_var.set(style.get('color', '#000000'))
             desc_var.set(style.get('description', ''))
+            tg = style.get('target_group', 'auto')
+            target_group_var.set(tg if tg in ('A', 'B', 'C') else 'auto（根据颜色自动判断）')
         else:
             # 设置默认值
             font_family_var.set('Microsoft YaHei')
             font_size_var.set('12')
             font_weight_var.set('normal')
             color_var.set('#FF0000')
+            target_group_var.set('auto（根据颜色自动判断）')
         
         # 按钮
         btn_frame = tk.Frame(editor_window, pady=15)
@@ -7450,15 +7472,31 @@ class OCRApp:
                 del self.font_style_rules[prefix]
             
             # 保存新的规则
+            tg_raw = target_group_var.get()
+            target_group = tg_raw if tg_raw in ('A', 'B', 'C') else 'auto'
             self.font_style_rules[new_prefix] = {
                 "font_family": font_family_var.get(),
                 "font_size": int(font_size_var.get()),
                 "font_weight": font_weight_var.get(),
                 "color": color_var.get(),
+                "target_group": target_group,
                 "description": desc_var.get().strip()
             }
             
             self.save_font_style_config()
+            
+            # 自动将匹配前缀的数据改为对应组
+            if not self.df.empty:
+                effective_group = target_group
+                if effective_group == 'auto':
+                    effective_group = 'A' if self._is_red_color(color_var.get()) else None
+                if effective_group:
+                    mask = self.df['Label'].str.lower().str.startswith(new_prefix.lower())
+                    changed = mask.sum()
+                    self.df.loc[mask, 'Group'] = effective_group
+                    if changed > 0:
+                        self.show_temp_message(f"✓ 已将 {changed} 个匹配项自动设为 {effective_group} 组")
+            
             refresh_callback()
             editor_window.destroy()
             
