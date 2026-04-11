@@ -933,37 +933,52 @@ class OCRApp:
             self.drag_source_item = item
     
     def show_group_dropdown(self, iid, event):
-        """显示组选择下拉菜单"""
+        """显示组选择下拉菜单（Excel内嵌Combobox风格）"""
         try:
-            # 获取当前组值
             values = self.tree.item(iid, 'values')
             if not values or len(values) < 3:
                 return
-            
-            current_group = values[2]
-            
-            # 创建弹出菜单
-            popup_menu = tk.Menu(self.root, tearoff=0)
-            
-            # 添加组选项
-            for group in ['A', 'B', 'C']:
-                # 当前选中的组用特殊标记
-                label = f"● {group}" if group == current_group else f"  {group}"
-                popup_menu.add_command(
-                    label=label,
-                    command=lambda g=group: self.set_group_value(iid, g)
-                )
-            
-            # 显示菜单
-            popup_menu.tk_popup(event.x_root, event.y_root)
-            
+
+            current_group = self._get_group_from_values(values)
+
+            # 获取单元格位置
+            bbox = self.tree.bbox(iid, '#3')
+            if not bbox:
+                return
+            x, y, width, height = bbox
+
+            # 如果已有编辑器，先销毁
+            if hasattr(self, '_group_combo') and self._group_combo.winfo_exists():
+                self._group_combo.destroy()
+
+            combo = ttk.Combobox(self.tree, values=['A', 'B', 'C'],
+                                 state='readonly',
+                                 font=("Microsoft YaHei", self.current_font_size))
+            combo.set(current_group)
+            combo.place(x=x, y=y, width=width + 2, height=height + 2)
+            combo.focus_set()
+            combo.event_generate('<Button-1>')  # 自动展开下拉
+
+            self._group_combo = combo
+            self._group_combo_iid = iid
+
+            def on_select(e):
+                new_group = combo.get()
+                combo.destroy()
+                self.set_group_value(iid, new_group)
+
+            def on_focus_out(e):
+                try:
+                    combo.destroy()
+                except:
+                    pass
+
+            combo.bind('<<ComboboxSelected>>', on_select)
+            combo.bind('<FocusOut>', on_focus_out)
+            combo.bind('<Escape>', lambda e: combo.destroy())
+
         except Exception as e:
             print(f"显示组下拉菜单失败: {e}")
-        finally:
-            try:
-                popup_menu.grab_release()
-            except:
-                pass
     
     def set_group_value(self, iid, group_value):
         """设置组值"""
@@ -978,6 +993,12 @@ class OCRApp:
                 self.show_temp_message(f"✓ 组已更新为：{group_value}")
         except Exception as e:
             print(f"设置组值失败: {e}")
+
+    def _get_group_from_values(self, values):
+        """从树视图values中读取组值（去掉显示用的▼箭头）"""
+        if values and len(values) > 2:
+            return str(values[2]).replace(' ▼', '').strip()
+        return 'B'
 
     def on_drag_motion(self, event):
         """拖拽中"""
@@ -1409,7 +1430,7 @@ class OCRApp:
                 if values and len(values) > 3:
                     idx = int(values[3])
                     if idx in self.df.index:
-                        current_group = values[2]
+                        current_group = self._get_group_from_values(values)
                         item_name = values[0]
                         items_to_change.append({
                             'idx': idx,
@@ -1472,7 +1493,7 @@ class OCRApp:
             values = self.tree.item(iid, 'values')
             if values and len(values) > 3:
                 idx = int(values[3])
-                old_group = values[2]
+                old_group = self._get_group_from_values(values)
                 item_name = values[0]
                 
                 # 直接设置为C
@@ -1502,10 +1523,8 @@ class OCRApp:
             if not values or len(values) < 3:
                 return
             
-            current_group = values[2]
+            current_group = self._get_group_from_values(values)
             item_name = values[0]
-            
-            # 创建右键菜单
             context_menu = tk.Menu(self.root, tearoff=0)
             
             # 添加标题
@@ -1560,7 +1579,7 @@ class OCRApp:
             values = self.tree.item(iid, 'values')
             if values and len(values) > 3:
                 idx = int(values[3])
-                old_group = values[2]
+                old_group = self._get_group_from_values(values)
                 item_name = values[0]
                 
                 # 更新DataFrame中的组值
@@ -1636,7 +1655,7 @@ class OCRApp:
                 values = self.tree.item(iid, 'values')
                 if not values or len(values) < 3:
                     return
-                current_value = values[2]
+                current_value = self._get_group_from_values(values)
                 edit_type = 'item_group'
                 editor_widget = 'combobox'
             else:
@@ -1992,7 +2011,7 @@ class OCRApp:
                     data_items.append({
                         'iid': iid,
                         'name': values[0],
-                        'current_group': values[2],
+                        'current_group': self._get_group_from_values(values),
                         'index': int(values[3])
                     })
         
