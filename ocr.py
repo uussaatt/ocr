@@ -1429,6 +1429,12 @@ class OCRApp:
                                      command=self.open_add_data_dialog)
             context_menu.add_command(label="❌ 删除",
                                      command=self.delete_selected_data)
+            # 选中两行时显示合并选项
+            selected = [i for i in self.tree.selection() if self.tree.parent(i)]
+            if len(selected) == 2:
+                context_menu.add_separator()
+                context_menu.add_command(label="🔗 合并选中两行",
+                                         command=self.merge_selected_items)
             try:
                 context_menu.tk_popup(event.x_root, event.y_root)
             finally:
@@ -2353,6 +2359,40 @@ class OCRApp:
             # 清除处理提示
             if hasattr(self, 'progress_label'):
                 self.progress_label.config(text="")
+
+    def merge_selected_items(self):
+        """合并选中的两行为一行，文字用空格连接，组值取第一行"""
+        selected = [i for i in self.tree.selection() if self.tree.parent(i)]
+        if len(selected) != 2:
+            messagebox.showwarning("提示", "请选中恰好两行再合并")
+            return
+
+        # 按树中显示顺序排序（谁在上面谁是第一个）
+        all_items = []
+        for cat in self.tree.get_children(""):
+            all_items.extend(self.tree.get_children(cat))
+        selected.sort(key=lambda x: all_items.index(x) if x in all_items else 0)
+
+        v1 = self.tree.item(selected[0], 'values')
+        v2 = self.tree.item(selected[1], 'values')
+        if not v1 or not v2 or len(v1) < 4 or len(v2) < 4:
+            return
+
+        idx1, idx2 = int(v1[3]), int(v2[3])
+        label1, label2 = v1[0], v2[0]
+        group1 = self._get_group_from_values(v1)
+
+        merged_label = f"{label1} {label2}"
+
+        # 更新第一行，删除第二行
+        self.df.loc[idx1, 'Label'] = merged_label
+        self.df.loc[idx1, 'Group'] = group1
+        self.df = self.df.drop(idx2).reset_index(drop=True)
+        self.reorder_dataframe()
+
+        self.category_list, self.marked_indices = [], set()
+        self.refresh_all()
+        self.show_temp_message(f"✓ 已合并：{merged_label}")
 
     def delete_selected_data(self):
         """删除选中数据"""
