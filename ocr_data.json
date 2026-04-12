@@ -2,8 +2,8 @@
   "window_config": {
     "width": 1381,
     "height": 844,
-    "x": 282,
-    "y": 250
+    "x": 304,
+    "y": 114
   },
   "stats": {
     "2026-01-10": {
@@ -515,14 +515,14 @@
     "basic_min_width": 0,
     "basic_min_height": 0,
     "basic_max_width": 8100,
-    "basic_max_height": 3000,
+    "basic_max_height": 8100,
     "general_min_width": 0,
     "general_min_height": 0,
     "general_max_width": 8192,
     "general_max_height": 8192
   },
   "font_config": {
-    "font_size": 16
+    "font_size": 18
   },
   "popup_windows": {
     "stats_window": {
@@ -546,8 +546,8 @@
     "size_limit_menu": {
       "width": 550,
       "height": 540,
-      "x": 685,
-      "y": 290
+      "x": 703,
+      "y": 174
     },
     "history_detail": {
       "width": 900,
@@ -563,45 +563,45 @@
     },
     "font_style_editor_德": {
       "width": 500,
-      "height": 575,
+      "height": 677,
       "x": 710,
       "y": 315
     },
     "font_style_settings": {
       "width": 700,
       "height": 600,
-      "x": 604,
-      "y": 214
+      "x": 485,
+      "y": 337
     },
     "font_style_editor_new": {
       "width": 500,
-      "height": 606,
+      "height": 659,
       "x": 781,
       "y": 324
     },
     "font_style_editor_祥": {
       "width": 500,
-      "height": 557,
-      "x": 710,
-      "y": 315
+      "height": 696,
+      "x": 703,
+      "y": 228
     },
     "font_style_editor_慶": {
       "width": 500,
-      "height": 595,
-      "x": 710,
-      "y": 315
+      "height": 675,
+      "x": 821,
+      "y": 294
     },
     "font_style_editor_瑞": {
       "width": 500,
-      "height": 570,
+      "height": 667,
       "x": 710,
       "y": 315
     },
     "add_data_dialog": {
       "width": 557,
       "height": 400,
-      "x": 807,
-      "y": 349
+      "x": 765,
+      "y": 538
     },
     "batch_group_dialog": {
       "width": 500,
@@ -617,52 +617,95 @@
     },
     "font_style_editor_振": {
       "width": 500,
-      "height": 582,
+      "height": 690,
+      "x": 700,
+      "y": 234
+    },
+    "unlock_password": {
+      "width": 500,
+      "height": 350,
+      "x": 710,
+      "y": 365
+    },
+    "font_style_editor_字": {
+      "width": 500,
+      "height": 649,
       "x": 710,
       "y": 315
+    },
+    "size_limit_settings": {
+      "width": 600,
+      "height": 700,
+      "x": 660,
+      "y": 190
+    },
+    "export_history": {
+      "width": 800,
+      "height": 600,
+      "x": 560,
+      "y": 240
+    },
+    "filter_settings": {
+      "width": 500,
+      "height": 480,
+      "x": 438,
+      "y": 309
     }
   },
   "space_presets": {
-    "数字编号": {
+    "Default": {
+      "custom_chars": "一時|二時|三時|四時|五時|六時|七時|八時|九時|十時|日時",
       "rules": [],
-      "custom_chars": "一号|二号|三号|四号|五号|六号|七号|八号|九号|十号",
-      "description": "数字编号中间加空格（一号→一 号）"
+      "description": "默认规则"
     }
   },
   "font_style_rules": {
     "德": {
       "font_family": "微软雅黑 Light",
-      "font_size": 24,
+      "font_size": 21,
       "font_weight": "normal",
       "color": "#FF0000",
+      "target_group": "auto",
       "description": ""
     },
     "慶": {
-      "font_family": "Microsoft YaHei",
-      "font_size": 24,
+      "font_family": "微软雅黑",
+      "font_size": 18,
       "font_weight": "normal",
       "color": "#FF0000",
+      "target_group": "auto",
       "description": ""
     },
     "祥": {
-      "font_family": "Microsoft YaHei",
-      "font_size": 24,
+      "font_family": "微软雅黑",
+      "font_size": 18,
       "font_weight": "normal",
       "color": "#FF0000",
+      "target_group": "auto",
       "description": ""
     },
     "瑞": {
-      "font_family": "Microsoft YaHei",
-      "font_size": 24,
+      "font_family": "微软雅黑",
+      "font_size": 18,
       "font_weight": "normal",
       "color": "#FF0000",
+      "target_group": "auto",
       "description": ""
     },
     "振": {
-      "font_family": "Microsoft YaHei",
-      "font_size": 24,
+      "font_family": "微软雅黑",
+      "font_size": 18,
       "font_weight": "normal",
       "color": "#FF0000",
+      "target_group": "auto",
+      "description": ""
+    },
+    "字": {
+      "font_family": "微软雅黑",
+      "font_size": 15,
+      "font_weight": "normal",
+      "color": "#006600",
+      "target_group": "C",
       "description": ""
     }
   },
@@ -688,5 +731,47 @@
       "字荇汀": "#0000FF"
     },
     "category_colors": {}
-  }
+  },
+  "export_history": [
+    {
+      "timestamp": "2026-04-12T10:54:30.791023",
+      "file_path": "C:/Users/a/Desktop/12.txt",
+      "file_name": "12.txt",
+      "content": "炳灼公长子\n\n瑞泽\n\n裕二七八\n字庆承\n\n炳灼公次子\n\n瑞源\n\n裕五百四\n\n字庆来\n\n墓在上宅下\n明化公三子\n\n瑞洽\n\n二九九\n\n墓在上宅上\n\n祥集\n\n祥藻\n\n祥藩\n\n钦二九五\n\n墓在珍溪口湾\n墓在上宅\n\n祥柿\n\n钦四二○\n\n字金桃\n\n祥美\n\n钦三六○\n\n字岩宣\n\n祥完\n\n配廊下朱景贞公次\n女生于一九一一年\n宣统辛亥\n生子三\n寿域在蒲瓜垅向南\n\n德浦\n\n配枫林徐氏\n墓在后山塘底\n\n德存\n\n兼承\n\n德峻\n\n渊三三四\n\n德存\n\n出承兼\n\n生一九三一年民国\n辛未十月廿四子时\n配花坦朱陈意生一\n九三四年民国甲戌\n三月初九日 时\n寿域在塘坪向南\n子五女一碎琴\n\n德大\n\n渊三二八\n\n德达\n\n兼入\n\n德顺\n\n字贤进居\n\n温州民航路\n配上河乡卢月华生\n一九五三年共和癸\n巳十月初五日 时\n生女一\n\n德光\n\n字荣光\n\n上陡门东\n路一○一弄四号\n配张永海公女建华\n生一九五六年共和\n丙申四月廿八 时\n生子一女一名小燕\n生一九七五年共和\n乙卯六月初三 时\n\n德恩\n\n字道恩居温\n\n州体育场边\n配莲琴生一九五\n\n生子一女一名汪兰\n\n字贤生\n\n庆生\n\n生一九四六年民国\n丙戌八月初十戌时\n配东村邵焕石三女\n碎春\n子三女\n次熙苹生一九八三年\n欲无临生一九八二年\n\n庆业\n\n庆友\n\n字首友兼承\n字忠龙兼承\n\n庆龙\n\n字首业\n\n庆业\n\n随父出兼\n生一九五五年共和\n乙未九月二十卯时\n配廊下朱启伦公长\n女忠眉  生子\n\n庆首\n\n字首多\n\n生一九五九年共和\n己亥正月廿二亥时\n配朱垟陈敏钏公次\n女华英 生子二\n\n庆洁\n\n生一九八三年共和\n癸亥七月廿一 时\n\n庆克\n\n字小克\n\n生一九七七年共和\n丁巳十一月初二 时\n\n庆其\n\n字斯斯\n\n生一九八二年共和\n壬戌九月十一 时\n\n振芳\n\n生一九七四年共和\n甲寅十月十二戌时\n\n振勇\n\n生一九七六年共和\n丙辰九月初十丑时\n\n振熙\n\n字仁熙\n字汪勇\n\n振勇\n\n随父兼承\n\n字汪勇\n\n振勇\n\n随父出兼\n\n生一九八四年共和\n甲子十月初一寅时\n\n振先\n\n生一九八二年共和\n壬戌十二月初二申时\n\n振朋\n\n字汪朋\n\n生一九八九年共和\n己巳八月十八子时",
+      "line_count": 134,
+      "char_count": 875,
+      "size_bytes": 2171
+    },
+    {
+      "timestamp": "2026-04-11T22:04:33.834777",
+      "file_path": "C:/Users/a/Desktop/1234.txt",
+      "file_name": "1234.txt",
+      "content": "炳灼公长子\n\n瑞泽\n\n裕二七八\n\n字庆承\n\n炳灼公次子\n\n瑞源\n\n裕五百四\n\n字庆来\n\n墓在上宅下\n明化公三子\n\n瑞洽\n\n二九九\n\n墓在上宅上\n\n祥集\n\n祥藻\n\n祥藩\n\n钦二九五\n\n墓在珍溪口湾\n墓在上宅\n\n祥柿\n\n钦四二○\n\n字金桃\n\n祥美\n\n钦三六○\n\n字岩宣\n\n祥完\n\n配廊下朱景贞公次\n女生于一九一一年\n宣统辛亥\n生子三\n寿域在蒲瓜垅向南\n\n德浦\n\n配枫林徐氏\n墓在后山塘底\n\n德存\n\n兼承\n\n德峻\n\n渊三三四\n\n德存\n\n出承兼\n生一九三一年民国\n辛未十月廿四子时\n配花坦朱陈意生一\n九三四年民国甲戌\n三月初九日时\n寿域在塘坪向南\n子五女一碎琴\n\n德大\n\n渊三二八\n\n德达\n\n兼入\n\n德顺\n\n字贤进居\n\n温州民航路\n配上河乡卢月华生\n一九五三年共和癸\n巳十月初五日时\n生女一\n\n德光\n\n字荣光\n上陡门东\n路一○一弄四号\n\n配张永海公女建华\n生一九五六年共和\n丙申四月廿八 时\n生子一女一名小燕\n生一九七五年共和\n乙卯六月初三 时\n\n德恩\n\n字道恩居温\n州体育场边\n\n配莲琴生一九五\n\n生子一女一名汪兰\n\n字贤生\n\n庆生\n\n生一九四六年民国\n丙戌八月初十戌时\n配东村邵焕石三女\n碎春\n子三女\n次熙苹生一九八三年\n欲无临生一九八二年\n\n庆业\n\n庆友\n\n字首友兼承\n字忠龙兼承\n\n庆龙\n\n字首业\n\n庆业\n\n随父出兼\n\n生一九五五年共和\n乙未九月二十卯时\n配廊下朱启伦公长\n女忠眉\n生子\n\n字首多\n\n庆首\n\n生一九五九年共和\n己亥正月廿二亥时\n配朱垟陈敏钏公次\n女华英\n生子二\n\n庆洁\n\n生一九八三年共和\n癸亥七月廿一 时\n\n庆克\n\n字小克\n\n生一九七七年共和\n丁巳十一月初二 时\n\n庆其\n\n字斯斯\n\n生一九八二年共和\n壬戌九月十一 时\n二百\n\n振芳\n\n生一九七四年共和\n甲寅十月十二戌时\n\n振勇\n\n生一九七六年共和\n丙辰九月初十丑时\n\n振熙\n\n字仁熙\n字汪勇\n\n振勇\n\n随父兼承\n\n字汪勇\n\n振勇\n\n随父出兼\n\n生一九八四年共和\n甲子十月初一寅时\n\n振先\n\n生一九八二年共和\n壬戌十二月初二申时\n\n振朋\n\n字汪朋\n\n生一九八九年共和\n己巳八月十八子时",
+      "line_count": 137,
+      "char_count": 876,
+      "size_bytes": 2176
+    },
+    {
+      "timestamp": "2026-04-11T10:24:28.805004",
+      "file_path": "C:/Users/a/Desktop/88.txt",
+      "file_name": "88.txt",
+      "content": "炳灼公长子\n\n瑞泽\n\n裕二七八\n\n字庆承\n\n炳灼公次子\n\n瑞源\n\n裕五百四\n\n字庆来\n\n墓在上宅下\n明化公三子\n\n瑞洽\n\n二九九\n\n墓在上宅上\n\n祥集\n\n祥藻\n\n祥藩\n\n钦二九五\n\n墓在珍溪口湾\n墓在上宅\n\n祥柿\n\n钦四二○\n字金桃\n\n祥美\n\n钦三六○\n\n字岩宣\n\n祥完\n\n配廊下朱景贞公次\n女生于一九一一年\n宣统辛亥\n生子三\n寿域在蒲瓜垅向南\n\n德浦\n\n配枫林徐氏\n墓在后山塘底\n\n德存\n\n兼承\n\n德峻\n\n渊三三四\n\n德存\n\n出承兼\n生一九三一年民国\n辛未十月廿四子时\n配花坦朱陈意生一\n九三四年民国甲戌\n三月初九日时\n寿域在塘坪向南\n子五女一碎琴\n\n德大\n\n渊三二八\n\n德达\n\n兼入\n\n德顺\n\n字贤进居\n\n温州民航路\n配上河乡卢月华生\n一九五三年共和癸\n巳十月初五日时\n生女一\n\n德光\n\n字荣光\n\n上陡门东\n路一○一弄四号\n配张永海公女建华\n生一九五六年共和\n丙申四月廿八 时\n生子一女一名小燕\n生一九七五年共和\n乙卯六月初三 时\n\n德恩\n\n字道恩居温\n\n州体育场边\n配莲琴生一九五\n霞山二宅四房下殿上三房派\n\n生子一女一名汪兰\n\n字贤生\n\n庆生\n\n生一九四六年民国\n丙戌八月初十戌时\n配东村邵焕石三女\n碎春\n子三女\n次熙苹生一九八三年\n欲无临生一九八二年\n\n庆业\n\n庆友\n\n字首友兼承\n字忠龙兼承\n\n庆龙\n\n字首业\n\n庆业\n\n随父出兼\n生一九五五年共和\n乙未九月二十卯时\n配廊下朱启伦公长\n女忠眉\n生子\n\n庆首\n\n字首多\n\n生一九五九年共和\n己亥正月廿二亥时\n配朱垟陈敏钏公次\n女华英\n生子二\n\n庆洁\n\n生一九八三年共和\n癸亥七月廿一 时\n\n庆克\n\n字小克\n\n生一九七七年共和\n丁巳十一月初二 时\n\n庆其\n\n字斯斯\n\n生一九八二年共和\n壬戌九月十一 时\n\n振芳\n\n生一九七四年共和\n甲寅十月十二戌时\n\n振勇\n\n生一九七六年共和\n丙辰九月初十丑时\n\n振熙\n\n字仁熙\n\n振勇\n\n字汪勇\n\n随父兼承\n\n字汪勇\n\n振勇\n\n随父出兼\n生一九八四年共和\n甲子十月初一寅时\n\n振先\n\n生一九八二年共和\n壬戌十二月初二申时\n\n振朋\n\n字汪朋\n\n生一九八九年共和\n己巳八月十八子时",
+      "line_count": 137,
+      "char_count": 884,
+      "size_bytes": 2204
+    },
+    {
+      "timestamp": "2026-04-10T19:24:13.505160",
+      "file_path": "C:/Users/a/Desktop/00.txt",
+      "file_name": "00.txt",
+      "content": "炳灼公长子\n\n瑞泽\n\n裕二七八\n字庆承\n\n炳灼公次子\n\n瑞源\n\n裕五百四\n字庆来\n\n墓在上宅下\n明化公三子\n\n瑞洽\n\n二九九\n\n墓在上宅上\n\n祥集\n\n快回家\n\n祥藻\n\n祥藩\n\n钦二九五\n\n墓在珍溪口湾\n墓在上宅\n\n祥柿\n\n钦四二○\n\n字金桃\n\n祥美\n\n钦三六○\n\n字岩宣\n\n祥完\n\n配廊下朱景贞公次\n女生于一九一一年\n宣统辛亥\n生子三\n寿域在蒲瓜垅向南\n霞山二宅四房下殿上三房派\n\n德浦\n\n配枫林徐氏\n墓在后山塘底\n\n德存\n\n兼承\n\n德峻\n\n渊三三四\n\n德存\n\n出承兼\n生一九三一年民国\n辛未十月廿四子时\n配花坦朱陈意生一\n九三四年民国甲戌\n三月初九日时\n寿域在塘坪向南\n子五女一碎琴\n\n德大\n\n渊三二八\n\n德达\n\n兼入\n\n德顺\n\n字贤进居\n\n温州民航路\n配上河乡卢月华生\n一九五三年共和癸\n巳十月初五日时\n生女一\n\n德光\n\n字荣光\n\n上陡门东\n路一○一弄四号\n配张永海公女建华\n生一九五六年共和\n丙申四月廿八 时\n生子一女一名小燕\n生一九七五年共和\n乙卯六月初三时\n\n德恩\n\n字道恩居温\n\n州体育场边\n配莲琴生一九五\n\n生子一女一名汪兰\n\n字贤生\n\n庆生\n\n生一九四六年民国\n丙戌八月初十戌时\n配东村邵焕石三女\n碎春\n子三女\n次熙苹生一九八三年\n欲无临生一九八二年\n\n庆业\n\n庆友\n\n字首友兼承\n字忠龙兼承\n\n庆龙\n\n字首业\n\n庆业\n\n随父出兼\n生一九五五年共和\n乙未九月二十卯时\n配廊下朱启伦公长\n女忠眉\n生子\n\n字首多\n\n庆首\n\n生一九五九年共和\n己亥正月廿二亥时\n配朱垟陈敏钏公次\n女华英\n生子二\n\n庆洁\n\n生一九八三年共和\n癸亥七月廿一 时\n\n庆克\n\n字小克\n\n生一九七七年共和\n丁巳十一月初二时\n\n庆其\n\n字斯斯\n\n生一九八二年共和\n壬戌九月十一时\n二百\n公元\n\n振芳\n\n生一九七四年共和\n甲寅十月十二戌时\n\n振勇\n\n生一九七六年共和\n丙辰九月初十丑时\n\n振熙\n\n字仁熙\n字汪勇\n\n振勇\n\n随父兼承\n\n字汪勇\n\n振勇\n\n随父出兼\n生一九八四年共和\n甲子十月初一寅时\n\n振先\n\n生一九八二年共和\n壬戌十二月初二申时\n\n振朋\n\n字汪朋\n\n生一九八九年共和\n己巳八月十八子时\n年共和辛已重修",
+      "line_count": 141,
+      "char_count": 898,
+      "size_bytes": 2246
+    }
+  ],
+  "filter_rules": [
+    "。",
+    "公元"
+  ]
 }
