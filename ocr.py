@@ -398,6 +398,10 @@ class OCRApp:
         # 字体样式配置
         self.font_style_rules = {}  # 字体样式规则：{前缀: {样式配置}}
         self.load_font_style_config()  # 加载字体样式配置
+
+        # 过滤清理规则
+        self.filter_rules = []  # 用户配置的过滤词/符号列表
+        self.load_filter_config()  # 加载过滤规则
         self.df = pd.DataFrame(columns=['Label', 'Y', 'X', 'Group', 'Order'])
         self.thresholds = []
         self.category_list = []
@@ -613,6 +617,7 @@ class OCRApp:
         tk.Button(t_bar, text="🔄 重置顺序", command=self.reset_order_by_y, bg="#f3e5f5").pack(side=tk.LEFT, padx=2)
         tk.Button(t_bar, text="⚙️ 空格设置", command=self.show_space_settings, bg="#f3e5f5").pack(side=tk.LEFT, padx=2)
         tk.Button(t_bar, text="🎨 字体样式", command=self.show_font_style_settings, bg="#e8f5e8").pack(side=tk.LEFT, padx=2)
+        tk.Button(t_bar, text="🧹 清理规则", command=self.show_filter_settings, bg="#fce4ec").pack(side=tk.LEFT, padx=2)
         
         # 添加功能提示
         tk.Label(t_bar, text="💡", fg="blue", bg="#ddd", font=("Arial", 10)).pack(side=tk.LEFT, padx=5)
@@ -626,7 +631,7 @@ class OCRApp:
                                  displaycolumns=('Label', 'Status', 'Group'))
         self.tree.heading('#0', text='分类目录');
         self.tree.heading('Label', text='名称');
-        self.tree.heading('Status', text='标记')
+        self.tree.heading('Status', text='☑')
         self.tree.heading('Group', text='组')
         self.tree.column('Index', width=0, stretch=False)
         
@@ -921,15 +926,19 @@ class OCRApp:
         """开始拖拽或处理特殊列点击"""
         item = self.tree.identify_row(event.y)
         column = self.tree.identify_column(event.x)
-        
+
+        # 单击复选框列 - 切换C组状态
+        if item and self.tree.parent(item) and column == '#2':
+            self.toggle_c_group(item)
+            return
+
         # 检查是否点击了组列
         if item and self.tree.parent(item) and column == '#3':
-            # 点击了组列，直接显示下拉菜单编辑
             self.show_group_dropdown(item, event)
             return
-        
+
         # 正常的拖拽逻辑
-        if item and self.tree.parent(item): 
+        if item and self.tree.parent(item):
             self.drag_source_item = item
     
     def show_group_dropdown(self, iid, event):
@@ -999,6 +1008,27 @@ class OCRApp:
         if values and len(values) > 2:
             return str(values[2]).replace(' ▼', '').strip()
         return 'B'
+
+    def toggle_c_group(self, iid):
+        """切换复选框：勾选=C组，取消=恢复原组（B或A）"""
+        try:
+            values = self.tree.item(iid, 'values')
+            if not values or len(values) < 4:
+                return
+            current_group = self._get_group_from_values(values)
+            idx = int(values[3])
+            if current_group == 'C':
+                # 取消勾选：恢复为B（或根据字体样式规则判断）
+                label_text = values[0]
+                new_group = self.get_group_by_text_color(label_text)
+                if new_group == 'C':
+                    new_group = 'B'
+            else:
+                new_group = 'C'
+            self.df.loc[idx, 'Group'] = new_group
+            self.refresh_all()
+        except Exception as e:
+            print(f"切换复选框失败: {e}")
 
     def on_drag_motion(self, event):
         """拖拽中"""
@@ -1085,6 +1115,7 @@ class OCRApp:
         self.configure_font_style_tags()
         
         cat_idx = set()
+        row_counter = 0  # 全局行计数，用于交替背景色
         for i, cat in enumerate(self.category_list):
             if not cat['indices']: continue
             tag = f"tag_{cat['color']}"
@@ -1101,10 +1132,11 @@ class OCRApp:
                 label_text = self.df.loc[idx, 'Label']
                 group = self.df.loc[idx, 'Group'] if 'Group' in self.df.columns else self.get_group_by_text_color(label_text)
                 
-                # 获取项目标签
                 item_tags = self.get_item_tags(label_text, group, m)
+                item_tags.append('row_even' if row_counter % 2 == 0 else 'row_odd')
+                row_counter += 1
                 
-                self.tree.insert(pid, "end", values=(label_text, "✅ 标记" if m else "", group, idx),
+                self.tree.insert(pid, "end", values=(label_text, "☑" if group == 'C' else "☐", group, idx),
                                  tags=tuple(item_tags))
                 cat_idx.add(idx)
         rem_df = self.df.drop(list(cat_idx))
@@ -1122,7 +1154,6 @@ class OCRApp:
             for name, sub in line_cats:
                 if sub.empty: continue
                 pid = self.tree.insert("", "end", text=f"📂 {self.custom_cat_names.get(name, name)}", open=True)
-                # 按Order列排序显示
                 if 'Order' in sub.columns:
                     sub_sorted = sub.sort_values('Order')
                 else:
@@ -1133,10 +1164,11 @@ class OCRApp:
                     label_text = r['Label']
                     group = r.get('Group', self.get_group_by_text_color(label_text))
                     
-                    # 获取项目标签
                     item_tags = self.get_item_tags(label_text, group, m)
+                    item_tags.append('row_even' if row_counter % 2 == 0 else 'row_odd')
+                    row_counter += 1
                     
-                    self.tree.insert(pid, "end", values=(label_text, "✅ 标记" if m else "", group, r_idx),
+                    self.tree.insert(pid, "end", values=(label_text, "☑" if group == 'C' else "☐", group, r_idx),
                                      tags=tuple(item_tags))
         self.generate_report_from_tree()
     
@@ -1355,9 +1387,17 @@ class OCRApp:
         # 更新全局Treeview样式 (内容和标题) - 增加行高确保文字完全显示
         ttk.Style().configure("Treeview", font=("Microsoft YaHei", s), rowheight=int(s * 3.0))
         ttk.Style().configure("Treeview.Heading", font=("Microsoft YaHei", s, "bold"))
-        
+        # 列分隔线效果
+        ttk.Style().configure("Treeview", relief="flat")
+        ttk.Style().layout("Treeview", [
+            ('Treeview.treearea', {'sticky': 'nswe'})
+        ])
+
         # 更新特定标签样式 - 标记状态只改变背景色，不改变字体和颜色
         self.tree.tag_configure('marked', background='#FFFACD')  # 浅黄色背景表示标记状态
+        # 交替行背景色
+        self.tree.tag_configure('row_even', background='#FFFFFF')
+        self.tree.tag_configure('row_odd', background='#F5F5F5')
         self.report_text.configure(font=("Microsoft YaHei", s))
 
     def on_right_click(self, event):
@@ -1377,11 +1417,20 @@ class OCRApp:
             if column == '#3':
                 # 右键点击组列 - 直接改为C
                 self.quick_set_group_to_c(iid)
-            else:
-                # 右键点击其他列 - 拆分所有A组
-                self.split_group_a_items()
+                return
+
+            # 右键点击名称列或打勾列 - 显示菜单
+            context_menu = tk.Menu(self.root, tearoff=0)
+            context_menu.add_command(label="⬆️ 向上移动一行",
+                                     command=lambda: self.move_item_up())
+            context_menu.add_command(label="✂️ 拆分A组",
+                                     command=lambda: self.split_group_a_items())
+            try:
+                context_menu.tk_popup(event.x_root, event.y_root)
+            finally:
+                context_menu.grab_release()
             return
-        
+
         # === 分类目录：显示菜单 ===
         if column == '#1' or column == '#2':
             # 右键点击名称列或标记列 - 批量改组为C
@@ -1612,8 +1661,8 @@ class OCRApp:
                     # 双击名称列 - 直接编辑
                     self.start_inline_edit(iid, column)
                 elif column == '#2':
-                    # 双击标记列 - 拆分所有A组项目
-                    self.split_group_a_items()
+                    # 点击复选框列 - 切换C组状态（单击已处理，双击同样触发）
+                    self.toggle_c_group(iid)
                 elif column == '#3':
                     # 双击组列 - 不做任何操作（单击已经能编辑）
                     pass
@@ -5307,6 +5356,143 @@ class OCRApp:
             print(f"✓ 字体样式配置已保存: {len(self.font_style_rules)} 个规则")
         except Exception as e:
             print(f"⚠️ 保存字体样式配置失败: {e}")
+
+    def load_filter_config(self):
+        """加载过滤清理规则"""
+        try:
+            self.filter_rules = self.store.get('filter_rules', [])
+            print(f"✓ 已加载过滤规则: {len(self.filter_rules)} 条")
+        except Exception as e:
+            print(f"⚠️ 加载过滤规则失败: {e}")
+            self.filter_rules = []
+
+    def save_filter_config(self):
+        """保存过滤清理规则"""
+        try:
+            self.store.set('filter_rules', self.filter_rules)
+            print(f"✓ 过滤规则已保存: {len(self.filter_rules)} 条")
+        except Exception as e:
+            print(f"⚠️ 保存过滤规则失败: {e}")
+
+    def show_filter_settings(self):
+        """显示过滤清理规则设置窗口"""
+        win = self.create_popup_window(self.root, "清理规则设置", "filter_settings", 500, 480)
+
+        tk.Label(win, text="🧹 清理规则设置",
+                 font=("Microsoft YaHei", 13, "bold")).pack(pady=(15, 5))
+        tk.Label(win, text="名称列中包含以下内容将被删除（保留该行，只删内容）",
+                 fg="gray", font=("Microsoft YaHei", 9)).pack()
+
+        # 规则列表
+        list_frame = tk.Frame(win)
+        list_frame.pack(fill=tk.BOTH, expand=True, padx=20, pady=10)
+
+        scrollbar = ttk.Scrollbar(list_frame)
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        listbox = tk.Listbox(list_frame, yscrollcommand=scrollbar.set,
+                             font=("Microsoft YaHei", 11), selectmode=tk.EXTENDED)
+        listbox.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        scrollbar.config(command=listbox.yview)
+
+        for rule in self.filter_rules:
+            listbox.insert(tk.END, rule)
+
+        # 输入区
+        input_frame = tk.Frame(win)
+        input_frame.pack(fill=tk.X, padx=20, pady=5)
+
+        entry_var = tk.StringVar()
+        entry = tk.Entry(input_frame, textvariable=entry_var,
+                         font=("Microsoft YaHei", 11))
+        entry.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        entry.focus_set()
+
+        def add_rule():
+            text = entry_var.get().strip()
+            if not text:
+                return
+            # 支持用 | 或换行一次添加多个
+            for t in re.split(r'[|\n]+', text):
+                t = t.strip()
+                if t and t not in self.filter_rules:
+                    self.filter_rules.append(t)
+                    listbox.insert(tk.END, t)
+            entry_var.set('')
+            entry.focus_set()
+
+        def delete_selected():
+            selected = list(reversed(listbox.curselection()))
+            for i in selected:
+                self.filter_rules.pop(i)
+                listbox.delete(i)
+
+        tk.Button(input_frame, text="➕ 添加", command=add_rule,
+                  bg="#4CAF50", fg="white", padx=10).pack(side=tk.LEFT, padx=5)
+        tk.Button(input_frame, text="❌ 删除选中", command=delete_selected,
+                  bg="#f44336", fg="white", padx=10).pack(side=tk.LEFT)
+
+        entry.bind('<Return>', lambda e: add_rule())
+
+        tk.Label(win, text="💡 支持用 | 分隔一次输入多个，如：。|，|（",
+                 fg="gray", font=("Arial", 9)).pack()
+
+        # 底部按钮
+        btn_frame = tk.Frame(win)
+        btn_frame.pack(fill=tk.X, padx=20, pady=15)
+
+        def apply_and_close():
+            self.save_filter_config()
+            win.destroy()
+            self.apply_filter_rules()
+
+        def save_only():
+            self.save_filter_config()
+            self.show_temp_message("✓ 规则已保存")
+            win.destroy()
+
+        tk.Button(btn_frame, text="应用并清除匹配内容", command=apply_and_close,
+                  bg="#E91E63", fg="white", font=("Microsoft YaHei", 10, "bold"),
+                  padx=15, pady=8).pack(side=tk.LEFT, padx=5)
+        tk.Button(btn_frame, text="仅保存规则", command=save_only,
+                  bg="#2196F3", fg="white", font=("Microsoft YaHei", 10),
+                  padx=15, pady=8).pack(side=tk.LEFT, padx=5)
+        tk.Button(btn_frame, text="取消", command=win.destroy,
+                  bg="#757575", fg="white", font=("Microsoft YaHei", 10),
+                  padx=15, pady=8).pack(side=tk.RIGHT, padx=5)
+
+    def apply_filter_rules(self):
+        """应用过滤规则，从名称列中删除指定内容，清理后为空的行直接删除"""
+        if self.df.empty or not self.filter_rules:
+            messagebox.showinfo("提示", "没有数据或没有过滤规则")
+            return
+
+        before_labels = self.df['Label'].copy()
+        for rule in self.filter_rules:
+            self.df['Label'] = self.df['Label'].str.replace(re.escape(rule), '', regex=True)
+
+        # 去掉首尾空格
+        self.df['Label'] = self.df['Label'].str.strip()
+
+        changed = (self.df['Label'] != before_labels).sum()
+
+        if changed == 0:
+            messagebox.showinfo("清理完成", "没有匹配的内容，无需修改")
+            return
+
+        # 清理后为空的行删掉
+        empty_mask = self.df['Label'] == ''
+        removed = empty_mask.sum()
+        if removed > 0:
+            self.df = self.df[~empty_mask].reset_index(drop=True)
+            self.reorder_dataframe()
+
+        self.category_list, self.marked_indices = [], set()
+        self.refresh_all()
+        self.show_temp_message(f"✓ 已修改 {changed} 行")
+        msg = f"已从 {changed} 行中删除匹配内容"
+        if removed > 0:
+            msg += f"\n其中 {removed} 行内容清空后已自动删除"
+        messagebox.showinfo("清理完成", msg)
     
     def get_system_fonts(self):
         """获取系统可用字体列表"""
@@ -7415,22 +7601,62 @@ class OCRApp:
         # 颜色设置
         color_frame = tk.LabelFrame(editor_window, text="颜色设置", padx=10, pady=10)
         color_frame.pack(fill=tk.X, padx=20, pady=10)
-        
+
         tk.Label(color_frame, text="文字颜色：").pack(anchor=tk.W)
-        
+
         color_var = tk.StringVar()
-        color_entry = tk.Entry(color_frame, textvariable=color_var, font=("Arial", 11), width=15)
-        color_entry.pack(side=tk.LEFT, pady=5)
-        
-        # 颜色选择按钮
+
+        # 预设颜色按钮行
+        preset_colors = [
+            ("红色", "#FF0000"), ("深红", "#CC0000"), ("橙色", "#FF8C00"),
+            ("绿色", "#00AA00"), ("深绿", "#006600"), ("蓝色", "#0000FF"),
+            ("深蓝", "#003399"), ("紫色", "#9400D3"), ("黑色", "#000000"),
+        ]
+
+        btn_row = tk.Frame(color_frame)
+        btn_row.pack(anchor=tk.W, pady=(0, 5))
+
+        def make_color_btn(name, hex_color):
+            def on_click():
+                color_var.set(hex_color)
+                preview_label.config(bg=hex_color)
+            btn = tk.Button(btn_row, text=name, bg=hex_color,
+                           fg="white" if hex_color not in ("#FF8C00", "#00AA00") else "black",
+                           font=("Arial", 9), padx=6, pady=3,
+                           relief=tk.RAISED, bd=1, command=on_click)
+            btn.pack(side=tk.LEFT, padx=2)
+
+        for name, hex_color in preset_colors:
+            make_color_btn(name, hex_color)
+
+        # 输入框 + 取色器 + 预览
+        input_row = tk.Frame(color_frame)
+        input_row.pack(anchor=tk.W, pady=3)
+
+        color_entry = tk.Entry(input_row, textvariable=color_var, font=("Arial", 11), width=12)
+        color_entry.pack(side=tk.LEFT)
+
+        preview_label = tk.Label(input_row, text="  预览  ", font=("Arial", 10),
+                                 relief=tk.SUNKEN, bd=1, padx=8, pady=3)
+        preview_label.pack(side=tk.LEFT, padx=8)
+
+        def update_preview(*args):
+            try:
+                c = color_var.get()
+                preview_label.config(bg=c)
+            except:
+                pass
+
+        color_var.trace_add('write', update_preview)
+
         def choose_color():
             from tkinter import colorchooser
-            color = colorchooser.askcolor(title="选择颜色")
-            if color[1]:  # 如果用户选择了颜色
+            color = colorchooser.askcolor(title="选择颜色", color=color_var.get())
+            if color[1]:
                 color_var.set(color[1])
-        
-        tk.Button(color_frame, text="选择颜色", command=choose_color,
-                 bg="#9C27B0", fg="white", padx=10, pady=5).pack(side=tk.LEFT, padx=10)
+
+        tk.Button(input_row, text="更多颜色...", command=choose_color,
+                 bg="#9C27B0", fg="white", padx=8, pady=3).pack(side=tk.LEFT, padx=5)
         
         # 自动分组设置
         group_frame = tk.LabelFrame(editor_window, text="自动分组", padx=10, pady=10)
