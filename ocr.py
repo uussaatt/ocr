@@ -613,8 +613,7 @@ class OCRApp:
         tk.Button(t_bar, text="✂️ 拆分A组", command=self.split_group_a_items, bg="#fffde7").pack(side=tk.LEFT, padx=2)
         # 添加工具提示
         self.create_tooltip(t_bar.winfo_children()[-1], "自动拆分所有A组且文字数>2的项目\n前两字→A组，其余字→C组")
-        tk.Button(t_bar, text="📌 固定位置", command=self.save_current_order, bg="#fff3e0").pack(side=tk.LEFT, padx=2)
-        tk.Button(t_bar, text="🔄 重置顺序", command=self.reset_order_by_y, bg="#f3e5f5").pack(side=tk.LEFT, padx=2)
+        tk.Button(t_bar, text="�  重置顺序", command=self.reset_order_by_y, bg="#f3e5f5").pack(side=tk.LEFT, padx=2)
         tk.Button(t_bar, text="⚙️ 空格设置", command=self.show_space_settings, bg="#f3e5f5").pack(side=tk.LEFT, padx=2)
         tk.Button(t_bar, text="🎨 字体样式", command=self.show_font_style_settings, bg="#e8f5e8").pack(side=tk.LEFT, padx=2)
         tk.Button(t_bar, text="🧹 清理规则", command=self.show_filter_settings, bg="#fce4ec").pack(side=tk.LEFT, padx=2)
@@ -1425,6 +1424,11 @@ class OCRApp:
                                      command=lambda: self.move_item_up())
             context_menu.add_command(label="✂️ 拆分A组",
                                      command=lambda: self.split_group_a_items())
+            context_menu.add_separator()
+            context_menu.add_command(label="➕ 新增",
+                                     command=self.open_add_data_dialog)
+            context_menu.add_command(label="❌ 删除",
+                                     command=self.delete_selected_data)
             try:
                 context_menu.tk_popup(event.x_root, event.y_root)
             finally:
