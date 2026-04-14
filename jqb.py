@@ -1084,27 +1084,29 @@ class ClipboardManager:
 
             dialog = ctk.CTkToplevel(self.root)
             dialog.title("导入选项")
-            dialog.geometry("380x200")
+            dialog.geometry("400x210")
             dialog.transient(self.root)
             dialog.grab_set()
             dialog.resizable(False, False)
 
             ctk.CTkLabel(dialog, text="导入方式", font=("Arial", 13, "bold")).pack(pady=(15, 5))
 
-            split_var = tk.BooleanVar(value=True)
+            split_mode_var = tk.StringVar(value="separator")
             skip_var = tk.BooleanVar(value=False)
 
             opt_frame = ctk.CTkFrame(dialog, fg_color="transparent")
             opt_frame.pack(fill="x", padx=20, pady=5)
 
-            ctk.CTkCheckBox(opt_frame, text="按空行分割（每段作为独立条目）", variable=split_var).pack(anchor="w", pady=3)
-            ctk.CTkCheckBox(opt_frame, text="跳过已存在的重复内容", variable=skip_var).pack(anchor="w", pady=3)
+            ctk.CTkRadioButton(opt_frame, text="按空行分割（条目内不能含空行）", variable=split_mode_var, value="blank_line").pack(anchor="w", pady=3)
+            ctk.CTkRadioButton(opt_frame, text="按 ---- 行分割（条目内可含空行）", variable=split_mode_var, value="separator").pack(anchor="w", pady=3)
+
+            ctk.CTkCheckBox(opt_frame, text="跳过已存在的重复内容", variable=skip_var).pack(anchor="w", pady=(8, 3))
 
             btn_frame = ctk.CTkFrame(dialog, fg_color="transparent")
             btn_frame.pack(pady=(10, 0))
 
             def on_confirm():
-                result['split'] = split_var.get()
+                result['split_mode'] = split_mode_var.get()
                 result['skip'] = skip_var.get()
                 result['confirmed'] = True
                 dialog.destroy()
@@ -1122,11 +1124,15 @@ class ClipboardManager:
             if not result.get('confirmed'):
                 return
 
-            split_mode = result['split']
+            split_mode = result['split_mode']
             skip_dup = result['skip']
 
             imported_count = skipped_count = 0
-            sections = content.split('\n\n') if split_mode else [content]
+            if split_mode == "blank_line":
+                sections = content.split('\n\n')
+            else:  # separator
+                import re
+                sections = re.split(r'\n-{4,}\n', content)
 
             for section in sections:
                 section = section.strip()

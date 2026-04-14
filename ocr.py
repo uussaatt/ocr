@@ -196,24 +196,21 @@ def ocr_image(image_path):
 
 
 def ocr_image_basic(image_path):
-    """对图片进行 OCR 识别（快速版 - accurate_basic）"""
-    url = "https://aip.baidubce.com/rest/2.0/ocr/v1/accurate_basic?access_token=" + get_access_token(use_basic=True)
-    
-    # 快速识别使用中等的文件大小限制
+    """对图片进行 OCR 识别（快速版 - general，含位置信息）"""
+    url = "https://aip.baidubce.com/rest/2.0/ocr/v1/general?access_token=" + get_access_token(use_basic=True)
+
     image_base64 = get_file_content_as_base64(image_path, max_size=8100, max_file_size_mb=3.5)
-    
+
     if image_base64 is None:
         return {"error_msg": "图片处理失败", "error_code": -1}
-    
-    # 使用字典格式的payload，和高精度识别保持一致
+
     payload = {
         'image': image_base64,
         'detect_direction': 'false',
         'paragraph': 'false',
         'probability': 'false',
-        'multidirectional_recognize': 'false'
     }
-    
+
     headers = {
         'Content-Type': 'application/x-www-form-urlencoded',
         'Accept': 'application/json'
@@ -225,31 +222,27 @@ def ocr_image_basic(image_path):
 
 
 def ocr_image_general(image_path):
-    """对图片进行 OCR 识别（通用版 - general）"""
-    # 使用通用识别的密钥
-    url = "https://aip.baidubce.com/rest/2.0/ocr/v1/general?access_token=" + get_access_token(use_general=True)
-    
-    # 通用识别使用较严格的文件大小限制
-    image_base64 = get_file_content_as_base64(image_path, max_size=4096, max_file_size_mb=3.0)
-    
+    """对图片进行 OCR 识别（通用版 - accurate_basic，使用通用识别密钥）"""
+    url = "https://aip.baidubce.com/rest/2.0/ocr/v1/accurate_basic?access_token=" + get_access_token(use_general=True)
+
+    image_base64 = get_file_content_as_base64(image_path, max_size=8100, max_file_size_mb=3.5)
+
     if image_base64 is None:
         return {"error_msg": "图片处理失败", "error_code": -1}
-    
-    # 通用识别的参数（按照你提供的代码格式）
+
     payload = {
         'image': image_base64,
         'detect_direction': 'false',
-        'detect_language': 'false',
-        'vertexes_location': 'false',
         'paragraph': 'false',
-        'probability': 'false'
+        'probability': 'false',
+        'multidirectional_recognize': 'false'
     }
-    
+
     headers = {
         'Content-Type': 'application/x-www-form-urlencoded',
         'Accept': 'application/json'
     }
-    
+
     response = requests.post(url, headers=headers, data=payload)
     response.encoding = "utf-8"
     return response.json()
@@ -402,6 +395,9 @@ class OCRApp:
         # 过滤清理规则
         self.filter_rules = []  # 用户配置的过滤词/符号列表
         self.load_filter_config()  # 加载过滤规则
+
+        # 报告分隔方式：'line'=----分隔线，'blank'=空行
+        self.report_separator = 'line'
         self.df = pd.DataFrame(columns=['Label', 'Y', 'X', 'Group', 'Order'])
         self.thresholds = []
         self.category_list = []
@@ -529,6 +525,36 @@ class OCRApp:
         
         self.image_paths = []  # 存储多个图片路径
         self.all_results = []  # 存储所有识别结果
+
+        # 根据密钥配置初始化按钮状态
+        self._update_ocr_btn_by_keys()
+
+    def _update_ocr_btn_by_keys(self):
+        """根据密钥配置更新三个识别按钮的可用状态"""
+        has_accurate = bool(API_KEY and SECRET_KEY)
+        has_basic = bool(API_KEY_BASIC and SECRET_KEY_BASIC)
+        has_general = bool(API_KEY_GENERAL and SECRET_KEY_GENERAL)
+
+        if hasattr(self, 'ocr_btn'):
+            self.ocr_btn.config(state=tk.NORMAL if has_accurate else tk.DISABLED)
+        if hasattr(self, 'quick_ocr_btn'):
+            self.quick_ocr_btn.config(state=tk.NORMAL if has_basic else tk.DISABLED)
+        if hasattr(self, 'general_ocr_btn'):
+            self.general_ocr_btn.config(state=tk.NORMAL if has_general else tk.DISABLED)
+
+        # 更新提示
+        hints = []
+        if not has_accurate:
+            hints.append("高精度")
+        if not has_basic:
+            hints.append("快速")
+        if not has_general:
+            hints.append("通用")
+        if hints and hasattr(self, 'progress_label'):
+            self.progress_label.config(
+                text=f"⚠️ 未配置密钥，以下功能不可用：{'、'.join(hints)}",
+                fg="orange"
+            )
 
     def setup_classifier_tab(self):
         """设置数据分类标签页"""
@@ -666,6 +692,11 @@ class OCRApp:
         self.create_tooltip(r_bar.winfo_children()[-1], "查看和管理导出的TXT文件历史记录\n• 查看、复制或保存之前导出的内容\n• 一键导出所有记录（需要密码）\n• 清空所有记录（需要密码）")
         tk.Button(r_bar, text="繁 -> 简", command=self.convert_to_simplified, bg="#fff0f5").pack(side=tk.LEFT, padx=2)
         tk.Button(r_bar, text="简 -> 繁", command=self.convert_to_traditional, bg="#fff0f5").pack(side=tk.LEFT, padx=2)
+
+        # 分隔方式切换按钮
+        self.separator_btn = tk.Button(r_bar, text="分隔: ----", bg="#e0f0ff",
+                                       command=self.toggle_report_separator)
+        self.separator_btn.pack(side=tk.LEFT, padx=2)
         
         # 添加空行规则说明
         tk.Label(r_bar, text="💡", fg="blue", bg="#ddd", font=("Arial", 10)).pack(side=tk.RIGHT, padx=5)
@@ -1295,82 +1326,64 @@ class OCRApp:
                     return True
         return False
 
+    def toggle_report_separator(self):
+        """切换报告分隔方式"""
+        if self.report_separator == 'line':
+            self.report_separator = 'blank'
+            self.separator_btn.config(text="分隔: 空行")
+        else:
+            self.report_separator = 'line'
+            self.separator_btn.config(text="分隔: ----")
+        self.generate_report_from_tree()
+
     def generate_report_from_tree(self):
-        """从树生成报告 - 根据组值和红色文字添加空行分隔
-        
-        空行添加规则：
-        1. 当组值改变时添加空行（原有规则）
-        2. 当红色文字与红色文字之间时添加空行（新规则）
-        3. 其他情况不添加空行
-        """
+        """从树生成报告 - 根据组值和红色文字添加分隔"""
         self.report_text.delete("1.0", tk.END)
         content = ""
-        
+        separator = "----\n" if self.report_separator == 'line' else "\n"
+
         for pid in self.tree.get_children(""):
             title = self.tree.item(pid, "text").replace("📂 ", "")
             children = self.tree.get_children(pid)
-            if not children: 
+            if not children:
                 continue
-                
+
             content += f"【{title}】:\n"
-            
-            # 收集所有数据项的信息，包括组值和颜色信息
+
             items_data = []
             for cid in children:
                 vals = self.tree.item(cid, "values")
-                if len(vals) >= 4:  # 确保有组值
+                if len(vals) >= 4:
                     name = vals[0]
-                    group = vals[2]  # 组值在第3列（索引2）
-                    idx = int(vals[3])  # 索引在第4列（索引3）
-                    is_marked = idx in self.marked_indices
-                    is_red = self.is_text_red_color(name)  # 判断是否为红色文字
-                    items_data.append({
-                        'name': name,
-                        'group': group,
-                        'is_marked': is_marked,
-                        'is_red': is_red,
-                        'index': idx
-                    })
-            
-            # 按原始顺序处理数据，根据组值和红色文字添加空行
+                    group = vals[2]
+                    idx = int(vals[3])
+                    is_red = self.is_text_red_color(name)
+                    items_data.append({'name': name, 'group': group, 'is_red': is_red})
+
             prev_group = None
             prev_is_red = None
-            
+
             for i, item in enumerate(items_data):
                 name = item['name']
                 group = item['group']
-                is_marked = item['is_marked']
                 is_red = item['is_red']
-                
-                # 添加空行的条件：
-                # 1. 组值改变了（原有规则）
-                # 2. 红色文字之间（新规则）
-                should_add_blank_line = False
-                blank_line_reason = ""
-                
-                if i > 0:  # 不是第一项
-                    # 原有规则：组值改变时添加空行
-                    if prev_group is not None and prev_group != group:
-                        should_add_blank_line = True
-                        blank_line_reason = f"组值变化: {prev_group} → {group}"
-                    
-                    # 新规则：红色文字之间添加空行
-                    elif prev_is_red and is_red:
-                        should_add_blank_line = True
-                        blank_line_reason = "红色文字之间"
-                
-                if should_add_blank_line:
-                    content += "\n"
-                
-                # 添加项目名称
+
+                if i > 0:
+                    if (prev_group is not None and prev_group != group) or (prev_is_red and is_red):
+                        content += separator
+
+                # 处理 ~ 前缀：每个 ~ 代表一个空行，输出后去掉前缀
+                leading_tildes = len(name) - len(name.lstrip('~'))
+                if leading_tildes > 0:
+                    content += "\n" * leading_tildes
+                    name = name[leading_tildes:]
+
                 content += f"{name}\n"
-                
                 prev_group = group
                 prev_is_red = is_red
-            
+
             content += "\n"
-        
-        # 插入到文本框
+
         self.report_text.insert(tk.END, content)
 
     def on_font_combo_change(self, event):
@@ -4823,7 +4836,11 @@ class OCRApp:
                     text_only_lines = []
                     for item in result["words_result"]:
                         words = item["words"]
-                        text_only_lines.append(words)
+                        location = item.get("location", {})
+                        top = location.get("top", 0)
+                        left = location.get("left", 0)
+                        height = location.get("height", 0)
+                        text_only_lines.append(f"{words}|{top}|{left}|{height}")
                     
                     recognized_text = "\n".join(text_only_lines)
                     self.root.after(0, lambda t=recognized_text: 
@@ -6099,7 +6116,7 @@ class OCRApp:
         tk.Frame(settings_frame, height=2, bg="gray").grid(row=3, column=0, columnspan=2, sticky=tk.EW, pady=15)
         
         # 快速识别密钥
-        tk.Label(settings_frame, text="快速识别密钥（可选，留空则使用高精度密钥）：", 
+        tk.Label(settings_frame, text="快速识别密钥", 
                 font=("Arial", 11, "bold"), fg="#00BCD4").grid(row=4, column=0, columnspan=2, sticky=tk.W, pady=10)
         
         tk.Label(settings_frame, text="API Key:").grid(row=5, column=0, sticky=tk.W, pady=5)
@@ -6116,7 +6133,7 @@ class OCRApp:
         tk.Frame(settings_frame, height=2, bg="gray").grid(row=7, column=0, columnspan=2, sticky=tk.EW, pady=15)
         
         # 通用识别密钥
-        tk.Label(settings_frame, text="通用识别密钥（可选，留空则使用快速识别密钥）：", 
+        tk.Label(settings_frame, text="通用识别密钥", 
                 font=("Arial", 11, "bold"), fg="#9C27B0").grid(row=8, column=0, columnspan=2, sticky=tk.W, pady=10)
         
         tk.Label(settings_frame, text="API Key:").grid(row=9, column=0, sticky=tk.W, pady=5)
@@ -6130,7 +6147,7 @@ class OCRApp:
         secret_key_general_entry.grid(row=10, column=1, sticky=tk.W, pady=5, padx=10)
         
         # 提示信息
-        hint_text = "💡 提示：\n• 高精度识别密钥为必填项\n• 快速识别密钥可选，留空则使用高精度密钥\n• 通用识别密钥可选，留空则使用快速识别密钥\n• 修改后立即生效，无需重启程序"
+        hint_text = "💡 提示：\n• 高精度识别密钥为必填项\n• 快速识别密钥可选\n 修改后立即生效，无需重启程序"
         tk.Label(settings_frame, text=hint_text, fg="blue", justify=tk.LEFT,
                 font=("Arial", 9)).grid(row=11, column=0, columnspan=2, pady=15, sticky=tk.W)
         
@@ -6197,6 +6214,7 @@ class OCRApp:
                     "API密钥已保存！\n\n"
                     "密钥已更新并保存到 .env 文件\n"
                     "立即生效，无需重启程序")
+                self._update_ocr_btn_by_keys()
             
             except Exception as e:
                 messagebox.showerror("错误", f"保存失败：{str(e)}")
