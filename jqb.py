@@ -1,6 +1,6 @@
 import customtkinter as ctk
 import tkinter as tk
-from tkinter import ttk, messagebox, filedialog
+from tkinter import messagebox, filedialog
 import pyperclip
 import threading
 import time
@@ -27,8 +27,13 @@ class ClipboardManager:
             ctk.set_default_color_theme("blue")
         else:
             self.root = ctk.CTk()
+
+        self.config_file = "config.json"
+        self.config = {}
+        self.load_config()
+
         self.root.title("剪切板管理器")
-        self.root.geometry("700x750")
+        self.root.geometry(self.config.get('window_geometry', '700x750'))
         self.always_on_top = True
         self.root.attributes('-topmost', self.always_on_top)
         
@@ -42,12 +47,7 @@ class ClipboardManager:
         self.hotkey_thread = None
         self.is_processing_paste = False
         self.quick_paste_mode = False
-        self.quick_paste_mode = False
         self.last_pasted_index = -1
-        self.config_file = "config.json"
-        self.config = {}
-
-        self.load_config()
         self.create_widgets()
 
         self.root.protocol("WM_DELETE_WINDOW", self.on_closing)
@@ -141,20 +141,29 @@ class ClipboardManager:
         # 2. 列表区 (Tabview)
         self.tabview = ctk.CTkTabview(self.main_ui_frame)
         self.tabview.grid(row=3, column=0, sticky="nsew", padx=10, pady=5)
-        
+
         self.tabview.add("历史记录")
         self.tabview.add("已粘贴")
-        
+
         self.tabview.tab("历史记录").grid_columnconfigure(0, weight=1)
         self.tabview.tab("历史记录").grid_rowconfigure(0, weight=1)
         self.tabview.tab("已粘贴").grid_columnconfigure(0, weight=1)
         self.tabview.tab("已粘贴").grid_rowconfigure(0, weight=1)
 
-        self.history_tree = self._setup_treeview(self.tabview.tab("历史记录"))
-        self.pasted_tree = self._setup_treeview(self.tabview.tab("已粘贴"))
+        self.history_list = ctk.CTkScrollableFrame(self.tabview.tab("历史记录"), fg_color="transparent")
+        self.history_list.grid(row=0, column=0, sticky="nsew")
+        self.history_list.grid_columnconfigure(0, weight=1)
 
-        self.history_tree.bind("<Control-Up>", lambda e: self.move_selected_items("up"))
-        self.history_tree.bind("<Control-Down>", lambda e: self.move_selected_items("down"))
+        self.pasted_list = ctk.CTkScrollableFrame(self.tabview.tab("已粘贴"), fg_color="transparent")
+        self.pasted_list.grid(row=0, column=0, sticky="nsew")
+        self.pasted_list.grid_columnconfigure(0, weight=1)
+
+        # 卡片行存储：{index: frame_widget}
+        self._card_frames = {}
+        self.selected_index = -1  # 当前选中的 clipboard_history 索引
+
+        self.root.bind("<Control-Up>", lambda e: self.move_selected_items("up"))
+        self.root.bind("<Control-Down>", lambda e: self.move_selected_items("down"))
 
         # 3. 详细内容区
         self.detail_frame = ctk.CTkFrame(self.main_ui_frame)
@@ -339,61 +348,134 @@ class ClipboardManager:
         else:
             self.mini_content_label.configure(text="无历史记录")
 
-    def _setup_treeview(self, parent_frame):
-        style = ttk.Style()
-        style.theme_use("default")
-        
-        # 适配暗色/亮色模式
-        is_dark = ctk.get_appearance_mode() == "Dark"
-        bg_color = "#2b2b2b" if is_dark else "#ffffff"
-        fg_color = "white" if is_dark else "black"
-        field_bg = "#2b2b2b" if is_dark else "#ffffff"
-        header_bg = "#565b5e" if is_dark else "#e1e1e1"
-        header_fg = "white" if is_dark else "black"
-        selected_bg = "#1f538d"
+    def _make_card(self, parent, index, item, is_next):
+        """创建单条卡片行"""
+        is_pasted = item.get('pasted', False)
 
-        style.configure("Treeview",
-                        background=bg_color,
-                        foreground=fg_color,
-                        rowheight=30,
-                        fieldbackground=field_bg,
-                        borderwidth=0,
-                        font=("Microsoft YaHei UI", 10))
-        
-        style.map('Treeview', background=[('selected', selected_bg)], foreground=[('selected', 'white')])
-        
-        style.configure("Treeview.Heading",
-                        background=header_bg,
-                        foreground=header_fg,
-                        relief="flat",
-                        font=("Microsoft YaHei UI", 10, "bold"))
-        
-        style.map("Treeview.Heading",
-                  background=[('active', '#3484F0')])
+        if is_next:
+            bg = ("#cce5ff", "#1a3a5c")  # 蓝色高亮：当前准备粘贴
+        elif self.selected_index == index:
+            bg = ("#d0e8ff", "#1f4060")
+        else:
+            bg = ("#f5f5f5", "#2b2b2b") if index % 2 == 0 else ("#ffffff", "#333333")
 
-        columns = ("时间", "类型", "内容预览")
-        tree = ttk.Treeview(parent_frame, columns=columns, show="headings", selectmode="extended")
-        
-        tree.heading("时间", text="⏰ 时间")
-        tree.heading("类型", text="🏷️ 类型")
-        tree.heading("内容预览", text="📝 内容预览")
-        
-        # 优化列宽设置，让内容预览列自动填充剩余空间
-        tree.column("时间", width=120, minwidth=100, stretch=False)
-        tree.column("类型", width=80, minwidth=60, stretch=False)
-        tree.column("内容预览", width=400, minwidth=250, stretch=True)
-        
-        scrollbar = ctk.CTkScrollbar(parent_frame, orientation="vertical", command=tree.yview)
-        tree.configure(yscrollcommand=scrollbar.set)
-        
-        tree.grid(row=0, column=0, sticky="nsew")
-        scrollbar.grid(row=0, column=1, sticky="ns")
-        
-        tree.bind("<Double-1>", self.on_item_double_click)
-        tree.bind("<ButtonRelease-1>", self.show_item_detail)
-        tree.bind("<Button-3>", self.show_context_menu)
-        
-        return tree
+        frame = ctk.CTkFrame(parent, fg_color=bg, corner_radius=4)
+        frame.grid(row=index, column=0, sticky="ew", padx=4, pady=2)
+        frame.grid_columnconfigure(1, weight=1)
+
+        # 序号标签
+        num_label = ctk.CTkLabel(frame, text=f"{index + 1}", width=30,
+                                  font=("Microsoft YaHei UI", 10),
+                                  text_color=("gray40", "gray60"))
+        num_label.grid(row=0, column=0, padx=(6, 2), pady=4)
+
+        # 内容预览
+        content_preview = item['content'].strip().replace('\r\n', ' ↵ ').replace('\n', ' ↵ ').replace('\r', ' ↵ ')
+        if not content_preview:
+            content_preview = "<空>"
+        preview_text = content_preview[:200]
+
+        content_label = ctk.CTkLabel(frame, text=preview_text, anchor="w",
+                                      font=("Microsoft YaHei UI", 10),
+                                      wraplength=0)
+        content_label.grid(row=0, column=1, sticky="ew", padx=(2, 6), pady=4)
+
+        # 当前准备粘贴标记
+        if is_next:
+            next_label = ctk.CTkLabel(frame, text="▶", width=20,
+                                       font=("Arial", 12), text_color="#1565C0")
+            next_label.grid(row=0, column=2, padx=(0, 4))
+
+        # 绑定事件
+        for widget in (frame, num_label, content_label):
+            widget.bind("<Button-1>", lambda e, i=index: self._on_card_click(i))
+            widget.bind("<Double-Button-1>", lambda e, i=index: self._on_card_double_click(i))
+            widget.bind("<Button-3>", lambda e, i=index: self._on_card_right_click(e, i))
+
+        return frame
+
+    def _on_card_click(self, index):
+        self.selected_index = index
+        self._update_card_highlights()
+        # 显示详细内容
+        try:
+            content = self.clipboard_history[index]['content']
+            self.detail_text.configure(state="normal")
+            self.detail_text.delete(1.0, tk.END)
+            self.detail_text.insert(1.0, content)
+            self.detail_text.configure(state="disabled")
+        except IndexError:
+            pass
+
+    def _on_card_double_click(self, index):
+        self.selected_index = index
+        self.copy_selected_item()
+        # 视觉反馈：短暂变绿
+        if index in self._card_frames and self._card_frames[index].winfo_exists():
+            self._card_frames[index].configure(fg_color=("#b9f6ca", "#1b5e20"))
+            self.root.after(400, self._update_card_highlights)
+
+    def _on_card_right_click(self, event, index):
+        self.selected_index = index
+        self._update_card_highlights()
+        is_pasted = self.clipboard_history[index].get('pasted', False)
+        menu = tk.Menu(self.root, tearoff=0)
+        if not is_pasted:
+            menu.add_command(label="📋 复制 (设为下一个粘贴项)", command=self.copy_selected_item)
+            menu.add_command(label="✏️ 编辑", command=self.edit_selected_item)
+            menu.add_separator()
+            menu.add_command(label="⬆️ 上移 (Ctrl+Up)", command=lambda: self.move_selected_items("up"))
+            menu.add_command(label="⬇️ 下移 (Ctrl+Down)", command=lambda: self.move_selected_items("down"))
+        else:
+            menu.add_command(label="↩️ 移回历史记录", command=self.mark_as_unpasted)
+            menu.add_command(label="📋 重新复制 (设为下一个粘贴项)", command=self.copy_selected_item)
+            menu.add_command(label="✏️ 编辑", command=self.edit_selected_item)
+        menu.add_separator()
+        menu.add_command(label="🗑️ 删除所选", command=self.delete_selected)
+        menu.tk_popup(event.x_root, event.y_root)
+
+    def edit_selected_item(self):
+        if self.selected_index < 0 or self.selected_index >= len(self.clipboard_history):
+            return
+        index = self.selected_index
+        original = self.clipboard_history[index]['content']
+
+        dialog = ctk.CTkToplevel(self.root)
+        dialog.title("编辑条目")
+        dialog.geometry(self.config.get('edit_geometry', '500x350'))
+        dialog.transient(self.root)
+        dialog.grab_set()
+
+        textbox = ctk.CTkTextbox(dialog, wrap="word", font=("Microsoft YaHei UI", 11))
+        textbox.pack(fill="both", expand=True, padx=10, pady=(10, 5))
+        textbox.insert("1.0", original)
+        textbox.focus_set()
+
+        btn_frame = ctk.CTkFrame(dialog, fg_color="transparent")
+        btn_frame.pack(pady=(0, 10))
+
+        def _save_edit_geo_and_close(destroy_fn):
+            self.config['edit_geometry'] = dialog.geometry()
+            self.save_config()
+            destroy_fn()
+
+        def on_save():
+            new_content = textbox.get("1.0", "end-1c")
+            self.config['edit_geometry'] = dialog.geometry()
+            if new_content != original:
+                new_hash = hashlib.md5(new_content.encode('utf-8')).hexdigest()
+                self.clipboard_history[index]['content'] = new_content
+                self.clipboard_history[index]['hash'] = new_hash
+                self.clipboard_history[index]['type'] = self.detect_content_type(new_content)
+                self.refresh_all_trees()
+                self.save_history()
+                self.status_var.set("条目已更新。")
+            self.save_config()
+            dialog.destroy()
+
+        ctk.CTkButton(btn_frame, text="💾 保存", command=on_save, width=100).pack(side="left", padx=10)
+        ctk.CTkButton(btn_frame, text="❌ 取消", command=lambda: _save_edit_geo_and_close(dialog.destroy), width=80,
+                      fg_color="transparent", border_width=1, text_color=("gray10", "gray90")).pack(side="left", padx=10)
 
     def monitor_clipboard(self):
         while self.monitoring:
@@ -429,7 +511,7 @@ class ClipboardManager:
     def open_settings_window(self):
         settings_win = ctk.CTkToplevel(self.root)
         settings_win.title("设置")
-        settings_win.geometry("500x500")
+        settings_win.geometry(self.config.get('settings_geometry', '500x500'))
         settings_win.transient(self.root)
         settings_win.grab_set()
         
@@ -506,19 +588,23 @@ class ClipboardManager:
             except:
                 pass
             self.max_history = self.config['max_history']
-            
+            self.config['settings_geometry'] = settings_win.geometry()
             self.apply_theme(theme_var.get())
-            
             self.save_config()
             self.reregister_hotkeys()
             self.toggle_quick_paste_mode(update_ui_only=True)
             self.trim_history()
             settings_win.destroy()
 
+        def cancel_settings():
+            self.config['settings_geometry'] = settings_win.geometry()
+            self.save_config()
+            settings_win.destroy()
+
         save_cancel_frame = ctk.CTkFrame(main_frame, fg_color="transparent")
         save_cancel_frame.pack(pady=(20, 0))
         ctk.CTkButton(save_cancel_frame, text="💾 保存并关闭", command=apply_and_save_settings).pack(side="left", padx=10)
-        ctk.CTkButton(save_cancel_frame, text="❌ 取消", command=settings_win.destroy, fg_color="transparent", border_width=1, text_color=("gray10", "gray90")).pack(side="left", padx=10)
+        ctk.CTkButton(save_cancel_frame, text="❌ 取消", command=cancel_settings, fg_color="transparent", border_width=1, text_color=("gray10", "gray90")).pack(side="left", padx=10)
 
     def trim_history(self):
         if len(self.clipboard_history) > self.max_history:
@@ -590,7 +676,6 @@ class ClipboardManager:
             self.is_processing_paste = False
 
     def _process_paste_after_action(self, pasted_content):
-        # 正序查找第一个内容匹配且未粘贴的条目，避免重复内容时索引跳位
         found_index = -1
         for i in range(len(self.clipboard_history)):
             item = self.clipboard_history[i]
@@ -600,7 +685,6 @@ class ClipboardManager:
                 break
 
         if found_index == -1:
-            # 没找到未粘贴的匹配项，尝试找任意匹配（已粘贴的重贴场景）
             for i in range(len(self.clipboard_history)):
                 if self.clipboard_history[i]['content'] == pasted_content:
                     found_index = i
@@ -609,10 +693,9 @@ class ClipboardManager:
         if found_index != -1:
             self.last_pasted_index = found_index
 
-        self.root.after(0, self.refresh_all_trees)
         self.save_history()
-        self.root.after(300, self.prepare_first_unpasted_for_paste)
-        self.root.after(350, self.select_next_unpasted_item)
+        # 延迟一次性刷新，合并 refresh + prepare + select_next 避免多次重建闪烁
+        self.root.after(100, self._post_paste_refresh)
 
     def reregister_hotkeys(self):
         try:
@@ -668,47 +751,70 @@ class ClipboardManager:
             self.status_var.set("快速连贴出错！")
 
     def delete_selected(self):
-        active_tree, _ = self.get_active_selection()
-        selected_iids = active_tree.selection()
-        if not selected_iids:
+        if self.selected_index < 0:
             self.status_var.set("请先选择要删除的项目")
             return
-        try:
-            items_to_delete_hashes = {self.clipboard_history[int(iid)]['hash'] for iid in selected_iids}
-        except (ValueError, IndexError):
-            self.status_var.set("选择项中包含无效的项目ID")
-            return
-
-        if messagebox.askyesno("确认删除", f"确定要删除所选的 {len(selected_iids)} 个项目吗？"):
-            self.clipboard_history = [item for item in self.clipboard_history if item['hash'] not in items_to_delete_hashes]
-            self.last_pasted_index = -1 # 删除后重置索引，防止错位
+        if messagebox.askyesno("确认删除", "确定要删除所选的项目吗？"):
+            del self.clipboard_history[self.selected_index]
+            self.selected_index = -1
+            self.last_pasted_index = -1
             self.refresh_all_trees()
             self.save_history()
-            self.status_var.set(f"已删除 {len(selected_iids)} 个项目")
+            self.status_var.set("已删除 1 个项目")
             self.prepare_first_unpasted_for_paste()
 
     def copy_selected_on_space(self, event=None):
-        active_tree, selected_iids = self.get_active_selection()
-        if not selected_iids:
+        if self.selected_index < 0:
             self.status_var.set("请先选择一个项目再按空格键复制")
             return
         self.copy_selected_item()
 
-    def select_next_unpasted_item(self):
-        """更新列表高亮，不抢焦点"""
-        try:
-            next_index = self.last_pasted_index + 1
-            if next_index >= len(self.clipboard_history):
-                next_index = 0
+    def _post_paste_refresh(self):
+        """粘贴后：移除已粘贴卡片，其余向上移，再把它追加到已粘贴列表"""
+        pasted_index = self.last_pasted_index
 
-            for child in self.history_tree.get_children():
-                if child == str(next_index):
-                    self.history_tree.selection_remove(self.history_tree.selection())
-                    self.history_tree.selection_set(child)
-                    self.history_tree.see(child)
-                    break
-        except Exception as e:
-            print(f"选中下一个条目时出错: {e}")
+        # 1. 销毁历史记录列表中对应的卡片
+        if pasted_index in self._card_frames:
+            frame = self._card_frames.pop(pasted_index)
+            if frame.winfo_exists():
+                frame.destroy()
+
+        # 2. 重新排列历史记录列表中剩余卡片的 grid row（向上填补空位）
+        history_cards = sorted(
+            [(i, f) for i, f in self._card_frames.items()
+             if f.winfo_exists() and not self.clipboard_history[i].get('pasted', False)],
+            key=lambda x: x[0]
+        )
+        for row, (i, frame) in enumerate(history_cards):
+            frame.grid(row=row, column=0, sticky="ew", padx=4, pady=2)
+
+        # 3. 把已粘贴条目追加到已粘贴列表末尾
+        if 0 <= pasted_index < len(self.clipboard_history):
+            item = self.clipboard_history[pasted_index]
+            pasted_row = len([f for f in self._card_frames.values()
+                               if f.winfo_exists() and
+                               self.clipboard_history.index(item) != pasted_index])
+            # 直接数已粘贴列表现有行数
+            pasted_row = len(self.pasted_list.winfo_children())
+            card = self._make_card(self.pasted_list, pasted_index, item, is_next=False)
+            card.grid(row=pasted_row, column=0, sticky="ew", padx=4, pady=2)
+            self._card_frames[pasted_index] = card
+
+        # 4. 准备下一条 + 更新高亮
+        self.prepare_first_unpasted_for_paste()
+        self._update_card_highlights()
+
+        # 5. 更新状态栏
+        unpasted = sum(1 for it in self.clipboard_history if not it.get('pasted', False))
+        total = len(self.clipboard_history)
+        self.status_var.set(f"就绪 | 历史: {unpasted} | 已粘贴: {total - unpasted}")
+
+    def select_next_unpasted_item(self):
+        next_index = self.last_pasted_index + 1
+        for i in range(next_index, len(self.clipboard_history)):
+            if not self.clipboard_history[i].get('pasted', False):
+                self.selected_index = i
+                break
 
     def prepare_first_unpasted_for_paste(self, new_item_content=None):
         if not self.clipboard_history:
@@ -758,180 +864,138 @@ class ClipboardManager:
         self.refresh_all_trees(scroll_to_end=False)
 
     def refresh_all_trees(self, scroll_to_end=False):
-        for tree in [self.history_tree, self.pasted_tree]:
-            tree.delete(*tree.get_children())
-        
+        # 清空两个列表
+        for widget in self.history_list.winfo_children():
+            widget.destroy()
+        for widget in self.pasted_list.winfo_children():
+            widget.destroy()
+        self._card_frames = {}
+
         search_term = self.search_var.get().lower().strip()
-        
+
+        # 找出下一条准备粘贴的索引
+        next_index = -1
+        for i in range(self.last_pasted_index + 1, len(self.clipboard_history)):
+            if not self.clipboard_history[i].get('pasted', False):
+                next_index = i
+                break
+        self._next_index = next_index
+
+        history_row = 0
+        pasted_row = 0
         history_count = pasted_count = 0
-        
-        # 正序遍历，让最先复制的项显示在最上面
-        for i in range(len(self.clipboard_history)):
-            item = self.clipboard_history[i]
-            # 搜索过滤
+
+        for i, item in enumerate(self.clipboard_history):
             if search_term and search_term not in item['content'].lower():
                 continue
 
-            ts = datetime.fromisoformat(item['timestamp']).strftime("%m-%d %H:%M:%S")
-            content_preview = item['content'].strip()
-            if not content_preview:
-                content_preview = "<空>"
-            else:
-                content_preview = content_preview.replace('\r\n', ' ↵ ').replace('\n', ' ↵ ').replace('\r', ' ↵ ')
-            
-            preview = content_preview[:300]
-            
-            values = (ts, item['type'], preview)
+            is_next = (i == next_index)
             if item.get('pasted', False):
-                self.pasted_tree.insert("", "end", iid=str(i), values=values)
+                card = self._make_card(self.pasted_list, i, item, is_next=False)
+                card.grid(row=pasted_row, column=0, sticky="ew", padx=4, pady=2)
+                pasted_row += 1
                 pasted_count += 1
             else:
-                self.history_tree.insert("", "end", iid=str(i), values=values)
+                card = self._make_card(self.history_list, i, item, is_next=is_next)
+                card.grid(row=history_row, column=0, sticky="ew", padx=4, pady=2)
+                history_row += 1
                 history_count += 1
-        
-        # 更新状态栏统计
+            self._card_frames[i] = card
+
         self.status_var.set(f"就绪 | 历史: {history_count} | 已粘贴: {pasted_count}")
-        
-        # 同时更新迷你模式的标签（如果有新内容）
         self.update_mini_label()
 
-        if scroll_to_end and self.history_tree.get_children():
-            # 滚动到最后一个（最新的）条目
-            last = self.history_tree.get_children()[-1]
-            self.history_tree.see(last)
-            self.history_tree.selection_set(last)
+    def _update_card_highlights(self):
+        """只更新卡片背景色，不重建，避免闪烁"""
+        next_index = -1
+        for i in range(self.last_pasted_index + 1, len(self.clipboard_history)):
+            if not self.clipboard_history[i].get('pasted', False):
+                next_index = i
+                break
+        self._next_index = next_index
+
+        for i, frame in self._card_frames.items():
+            if not frame.winfo_exists():
+                continue
+            if i == next_index:
+                bg = ("#cce5ff", "#1a3a5c")
+            elif i == self.selected_index:
+                bg = ("#d0e8ff", "#1f4060")
+            else:
+                bg = ("#f5f5f5", "#2b2b2b") if i % 2 == 0 else ("#ffffff", "#333333")
+            frame.configure(fg_color=bg)
+
+        unpasted = sum(1 for item in self.clipboard_history if not item.get('pasted', False))
+        total = len(self.clipboard_history)
+        self.status_var.set(f"就绪 | 历史: {unpasted} | 已粘贴: {total - unpasted}")
+        self.update_mini_label()
 
     def mark_as_unpasted(self):
-        active_tree, selected_iids = self.get_active_selection()
-        if not selected_iids or active_tree != self.pasted_tree:
-            self.status_var.set("请在'已粘贴'列表中选择一个或多个项目")
+        if self.selected_index < 0:
+            self.status_var.set("请先选择一个已粘贴的项目")
             return
+        index = self.selected_index
+        if 0 <= index < len(self.clipboard_history):
+            self.clipboard_history[index]['pasted'] = False
+            self.clipboard_history[index]['saved'] = False
+            # 让 prepare 从这条开始找，确保移回的条目不被跳过
+            self.last_pasted_index = index - 1
+            self.refresh_all_trees()
+            self.save_history()
+            self.status_var.set("已将条目移回历史记录")
+            self.prepare_first_unpasted_for_paste()
 
-        try:
-            count = 0
-            for iid in selected_iids:
-                index = int(iid)
-                if 0 <= index < len(self.clipboard_history):
-                    self.clipboard_history[index]['pasted'] = False
-                    self.clipboard_history[index]['saved'] = False
-                    count += 1
-
-            if count > 0:
-                self.refresh_all_trees()
-                self.save_history()
-                self.status_var.set(f"已将 {count} 个条目移回历史记录")
-                self.prepare_first_unpasted_for_paste()
-
-        except (ValueError, IndexError):
-            self.status_var.set("错误：选择的项目无效")
-
-    def on_item_double_click(self, event):
-        active_tree, selected_iids = self.get_active_selection()
-        if not selected_iids: return
-        self.copy_selected_item()
+    def on_item_double_click(self, event=None):
+        if self.selected_index >= 0:
+            self.copy_selected_item()
 
     def show_item_detail(self, event=None):
-        if event and event.widget.identify_region(event.x, event.y) == 'heading': return
-        active_tree, selected_iids = self.get_active_selection()
-        if not selected_iids: return
-        sel = selected_iids[0]
-        try:
-            content = self.clipboard_history[int(sel)]['content']
-            self.detail_text.configure(state="normal")
-            self.detail_text.delete(1.0, tk.END)
-            self.detail_text.insert(1.0, content)
-            self.detail_text.configure(state="disabled")
-        except (ValueError, IndexError):
-            pass
+        pass  # 卡片点击已在 _on_card_click 中处理
 
     def get_active_selection(self):
-        try:
-            current_tab = self.tabview.get()
-            active_tree = self.history_tree if current_tab == "历史记录" else self.pasted_tree
-            selection = active_tree.selection()
-            return active_tree, selection
-        except Exception:
-            return self.history_tree, ()
+        """返回 (is_pasted, [selected_index]) 兼容旧接口"""
+        if self.selected_index < 0 or self.selected_index >= len(self.clipboard_history):
+            return None, []
+        return None, [str(self.selected_index)]
 
     def copy_selected_item(self):
-        active_tree, selected_iids = self.get_active_selection()
-        if not selected_iids:
-            messagebox.showwarning("提示", "请先在主窗口选择一个项目再进行复制。")
+        if self.selected_index < 0 or self.selected_index >= len(self.clipboard_history):
+            messagebox.showwarning("提示", "请先选择一个项目再进行复制。")
             return
-
-        iid = selected_iids[0]
         try:
-            content = self.clipboard_history[int(iid)]['content']
+            content = self.clipboard_history[self.selected_index]['content']
             pyperclip.copy(content)
             self.current_clipboard = content
-            # 手动选择时，更新 last_pasted_index，但不立即准备下一条
-            # 这样用户粘贴这条后，会自动准备下一条
-            self.last_pasted_index = int(iid)
-            
-            # 高亮显示当前选中的项目
-            active_tree.selection_set(iid)
-            active_tree.see(iid)
-            
+            self.last_pasted_index = self.selected_index - 1  # 下次 prepare 会从 selected+1 开始找
             self.status_var.set(f"已手动选择: {content[:30]}... 按 Ctrl+V 粘贴。")
-        except (ValueError, IndexError):
+        except IndexError:
             self.status_var.set("选择的项目无效")
 
     def move_selected_items(self, direction):
-        active_tree, selected_iids = self.get_active_selection()
-        if not selected_iids or active_tree != self.history_tree:
+        i = self.selected_index
+        if i < 0 or i >= len(self.clipboard_history):
+            self.status_var.set("请先选择一个项目以调整顺序。")
+            return
+        if self.clipboard_history[i].get('pasted', False):
             self.status_var.set("请在'历史记录'列表中选择项目以调整顺序。")
             return
 
-        try:
-            indices = [int(iid) for iid in selected_iids]
+        if direction == "up" and i > 0:
+            self.clipboard_history[i], self.clipboard_history[i - 1] = self.clipboard_history[i - 1], self.clipboard_history[i]
+            self.selected_index = i - 1
+        elif direction == "down" and i < len(self.clipboard_history) - 1:
+            self.clipboard_history[i], self.clipboard_history[i + 1] = self.clipboard_history[i + 1], self.clipboard_history[i]
+            self.selected_index = i + 1
+        else:
+            return
 
-            if direction == "up":
-                indices.sort()
-                for i in indices:
-                    if i > 0:
-                        self.clipboard_history[i], self.clipboard_history[i - 1] = self.clipboard_history[i - 1], self.clipboard_history[i]
-            elif direction == "down":
-                indices.sort(reverse=True)
-                for i in indices:
-                    if i < len(self.clipboard_history) - 1:
-                        self.clipboard_history[i], self.clipboard_history[i + 1] = self.clipboard_history[i + 1], self.clipboard_history[i]
-
-            offset = -1 if direction == "up" else 1
-            new_iids_to_select = [str(i + offset) for i in indices]
-
-            self.refresh_all_trees()
-            self.save_history()
-
-            for new_iid in new_iids_to_select:
-                self.history_tree.selection_add(new_iid)
-            if new_iids_to_select:
-                self.history_tree.see(new_iids_to_select[0])
-
-            self.prepare_first_unpasted_for_paste()
-            self.status_var.set(f"已将 {len(indices)} 个项目向{'上' if direction == 'up' else '下'}移动。")
-
-        except (ValueError, IndexError) as e:
-            self.status_var.set(f"顺序调整失败: {e}")
+        self.refresh_all_trees()
+        self.save_history()
+        self.prepare_first_unpasted_for_paste()
+        self.status_var.set(f"已向{'上' if direction == 'up' else '下'}移动。")
 
     def show_context_menu(self, event):
-        iid = event.widget.identify_row(event.y)
-        if iid:
-            if iid not in event.widget.selection():
-                event.widget.selection_set(iid)
-
-            menu = tk.Menu(self.root, tearoff=0)
-            if event.widget == self.history_tree:
-                menu.add_command(label="📋 复制 (设为下一个粘贴项)", command=self.copy_selected_item)
-                menu.add_separator()
-                menu.add_command(label="⬆️ 上移 (Ctrl+Up)", command=lambda: self.move_selected_items("up"))
-                menu.add_command(label="⬇️ 下移 (Ctrl+Down)", command=lambda: self.move_selected_items("down"))
-            else:
-                menu.add_command(label="↩️ 移回历史记录", command=self.mark_as_unpasted)
-                menu.add_command(label="📋 重新复制 (设为下一个粘贴项)", command=self.copy_selected_item)
-
-            menu.add_separator()
-            menu.add_command(label="🗑️ 删除所选", command=self.delete_selected)
-            menu.tk_popup(event.x_root, event.y_root)
+        pass  # 右键菜单已移至卡片的 _on_card_right_click
 
     def clear_history_prompt(self):
         res = messagebox.askquestion("清空历史记录", "要清空所有记录吗？\n('是'清空所有, '否'仅清空已粘贴)",
@@ -986,6 +1050,8 @@ class ClipboardManager:
         keyboard.unhook_all()
 
     def on_closing(self):
+        self.config['window_geometry'] = self.root.geometry()
+        self.save_config()
         self.stop_monitoring()
         self.stop_hotkey_listener()
         self.save_history()
