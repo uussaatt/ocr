@@ -711,48 +711,38 @@ class ClipboardManager:
             print(f"选中下一个条目时出错: {e}")
 
     def prepare_first_unpasted_for_paste(self, new_item_content=None):
-        # 修改逻辑：从旧到新的顺序粘贴，配合显示顺序（最先复制的在上面）
         if not self.clipboard_history:
             return
 
-        # 如果是新添加的内容，从第一个开始准备
+        # 找下一条未粘贴的条目
         if new_item_content is not None:
-            self.last_pasted_index = -1  # 重置为-1，下次会从0开始
-            # 新添加内容时，准备第一条（最旧的）
-            next_index = 0
+            # 新内容加入时，从头找第一条未粘贴的
+            start = 0
         else:
-            # 正常连贴流程，准备下一条（索引加1）
-            next_index = self.last_pasted_index + 1
-            
-        is_finished_cycle = False
-        # 循环：如果超出范围，回到开头（最旧的）
-        if next_index >= len(self.clipboard_history):
-            next_index = 0
-            is_finished_cycle = True
-        
-        # 确保索引在有效范围内
-        if next_index < 0:
-            next_index = 0
-            
-        item = self.clipboard_history[next_index]
-        
-        pyperclip.copy(item['content'])
-        self.current_clipboard = item['content']
-        
-        # 状态栏提示
-        preview = item['content'].strip().replace('\n', ' ')[:30]
-        if new_item_content is not None:
-            self.status_var.set(f"新内容已添加，准备从第一条开始: {preview}...")
-        else:
-            self.status_var.set(f"已准备下一条: {preview}...")
-        
-        # 同步更新迷你模式的显示
-        if is_finished_cycle and new_item_content is None:
-             self.mini_content_label.configure(text="✅ 所有记录已粘贴完毕")
-             # 延迟 1.5 秒后恢复显示内容预览，让用户看到提示
-             self.root.after(1500, self.update_mini_label)
-        else:
-             self.update_mini_label()
+            start = self.last_pasted_index + 1
+
+        # 从 start 往后找第一条未粘贴的
+        next_item = None
+        next_index = -1
+        for i in range(start, len(self.clipboard_history)):
+            if not self.clipboard_history[i].get('pasted', False):
+                next_item = self.clipboard_history[i]
+                next_index = i
+                break
+
+        if next_item is None:
+            # 历史记录里没有未粘贴的条目，停止
+            self.status_var.set("✅ 所有条目已粘贴完毕，历史记录已清空待用。")
+            self.mini_content_label.configure(text="✅ 所有条目已粘贴完毕")
+            self.root.after(1500, self.update_mini_label)
+            return
+
+        pyperclip.copy(next_item['content'])
+        self.current_clipboard = next_item['content']
+
+        preview = next_item['content'].strip().replace('\n', ' ')[:30]
+        self.status_var.set(f"已准备下一条 [{next_index + 1}/{len(self.clipboard_history)}]: {preview}...")
+        self.update_mini_label()
 
     def add_to_history(self, content):
         content_hash = hashlib.md5(content.encode('utf-8')).hexdigest()
