@@ -1382,7 +1382,7 @@ class OCRApp:
                 prev_group = group
                 prev_is_red = is_red
 
-            content += "\n"
+            content += separator
 
         self.report_text.insert(tk.END, content)
 
