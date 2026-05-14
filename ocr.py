@@ -635,14 +635,11 @@ class OCRApp:
         tk.Button(t_bar, text="↑ 上移", command=self.move_item_up).pack(side=tk.LEFT, padx=2)
         tk.Button(t_bar, text="↓ 下移", command=self.move_item_down).pack(side=tk.LEFT, padx=2)
         tk.Label(t_bar, text="|").pack(side=tk.LEFT, padx=2)
-        tk.Button(t_bar, text="🔤 加空格", command=self.add_spaces_to_tree_items, bg="#e3f2fd").pack(side=tk.LEFT, padx=2)
-        tk.Button(t_bar, text="✂️ 拆分A组", command=self.split_group_a_items, bg="#fffde7").pack(side=tk.LEFT, padx=2)
-        # 添加工具提示
-        self.create_tooltip(t_bar.winfo_children()[-1], "自动拆分所有A组且文字数>2的项目\n前两字→A组，其余字→C组")
+        tk.Button(t_bar, text="修正", command=self.apply_corrections, bg="#e3f2fd").pack(side=tk.LEFT, padx=2)
+        self.create_tooltip(t_bar.winfo_children()[-1], "依次执行：加空格、拆分A组、清理")
         tk.Button(t_bar, text="�  重置顺序", command=self.reset_order_by_y, bg="#f3e5f5").pack(side=tk.LEFT, padx=2)
-        tk.Button(t_bar, text="⚙️ 空格设置", command=self.show_space_settings, bg="#f3e5f5").pack(side=tk.LEFT, padx=2)
+        tk.Button(t_bar, text="⚙️ 空格/清理设置", command=self.show_space_settings, bg="#f3e5f5").pack(side=tk.LEFT, padx=2)
         tk.Button(t_bar, text="🎨 字体样式", command=self.show_font_style_settings, bg="#e8f5e8").pack(side=tk.LEFT, padx=2)
-        tk.Button(t_bar, text="🧹 清理规则", command=self.show_filter_settings, bg="#fce4ec").pack(side=tk.LEFT, padx=2)
         
         # 添加功能提示
         tk.Label(t_bar, text="💡", fg="blue", bg="#ddd", font=("Arial", 10)).pack(side=tk.LEFT, padx=5)
@@ -1027,8 +1024,8 @@ class OCRApp:
                 idx = int(values[3])
                 # 更新DataFrame中的组值
                 self.df.loc[idx, 'Group'] = group_value
-                # 刷新显示
-                self.refresh_all()
+                # 只刷新树，不重绘图表
+                self.refresh_tree_only()
                 self.show_temp_message(f"✓ 组已更新为：{group_value}")
         except Exception as e:
             print(f"设置组值失败: {e}")
@@ -1056,7 +1053,7 @@ class OCRApp:
             else:
                 new_group = 'C'
             self.df.loc[idx, 'Group'] = new_group
-            self.refresh_all()
+            self.refresh_tree_only()
         except Exception as e:
             print(f"切换复选框失败: {e}")
 
@@ -1206,6 +1203,8 @@ class OCRApp:
         """配置字体样式标签"""
         # 配置用户自定义的字体样式规则
         for prefix, style in self.font_style_rules.items():
+            if not style.get('enabled', True):
+                continue
             tag_name = f"font_style_{prefix}"
             
             # 构建字体配置
@@ -1294,7 +1293,9 @@ class OCRApp:
 
     def get_font_style_tag(self, text):
         """获取文本对应的字体样式标签"""
-        for prefix in self.font_style_rules:
+        for prefix, style in self.font_style_rules.items():
+            if not style.get('enabled', True):
+                continue
             if text.lower().startswith(prefix.lower()):
                 return f"font_style_{prefix}"
         return None
@@ -1302,10 +1303,14 @@ class OCRApp:
     def get_group_by_text_color(self, text):
         """根据字体样式规则获取组值"""
         for prefix, style in self.font_style_rules.items():
+            if not style.get('enabled', True):
+                continue
             if text.lower().startswith(prefix.lower()):
                 # 优先使用规则中明确指定的 target_group
                 if 'target_group' in style and style['target_group'] in ('A', 'B', 'C'):
                     return style['target_group']
+                if style.get('target_group') == 'none':
+                    return 'B'
                 # 兼容旧逻辑：红色自动为 A 组
                 if self._is_red_color(style.get('color', '#000000')):
                     return 'A'
@@ -1321,6 +1326,8 @@ class OCRApp:
     def is_text_red_color(self, text):
         """判断文字是否为红色"""
         for prefix, style in self.font_style_rules.items():
+            if not style.get('enabled', True):
+                continue
             if text.lower().startswith(prefix.lower()):
                 if self._is_red_color(style.get('color', '#000000')):
                     return True
@@ -1574,8 +1581,8 @@ class OCRApp:
                 # 更新DataFrame中的组值
                 self.df.loc[idx, 'Group'] = new_group
                 
-                # 刷新显示
-                self.refresh_all()
+                # 只刷新树，不重绘图表
+                self.refresh_tree_only()
                 
                 # 显示提示消息
                 if old_group != new_group:
@@ -1657,8 +1664,8 @@ class OCRApp:
                 # 更新DataFrame中的组值
                 self.df.loc[idx, 'Group'] = group_value
                 
-                # 刷新显示
-                self.refresh_all()
+                # 只刷新树，不重绘图表
+                self.refresh_tree_only()
                 
                 # 显示提示消息
                 if old_group != group_value:
@@ -1811,7 +1818,7 @@ class OCRApp:
                 else:
                     self.custom_cat_names[old_name] = new_value
                 
-                self.refresh_all()
+                self.refresh_tree_only()
                 self.show_temp_message(f"✓ 分类已重命名：{new_value}")
                 
             elif edit_info['edit_type'] == 'item_name':
@@ -1820,7 +1827,7 @@ class OCRApp:
                 if values and len(values) > 3:
                     idx = int(values[3])
                     self.df.loc[idx, 'Label'] = new_value
-                    self.refresh_all()
+                    self.refresh_tree_only()
                     self.show_temp_message(f"✓ 已更新：{new_value}")
                     
             elif edit_info['edit_type'] == 'item_group':
@@ -1829,7 +1836,7 @@ class OCRApp:
                 if values and len(values) > 3:
                     idx = int(values[3])
                     self.df.loc[idx, 'Group'] = new_value
-                    self.refresh_all()
+                    self.refresh_tree_only()
                     self.show_temp_message(f"✓ 组已更新：{new_value}")
             
         except Exception as e:
@@ -2352,8 +2359,15 @@ class OCRApp:
         except Exception as e:
             messagebox.showerror("错误", f"更改颜色失败：{str(e)}")
 
+    def refresh_tree_only(self):
+        """只刷新分类目录树和报告，不重绘 matplotlib 图表（适合小操作）"""
+        try:
+            self.classify_and_display()
+        except Exception as e:
+            print(f"刷新树时出错: {e}")
+
     def refresh_all(self):
-        """刷新所有"""
+        """刷新所有（含 matplotlib 图表重绘，适合数据结构变化时调用）"""
         try:
             # 显示处理提示
             if hasattr(self, 'progress_label'):
@@ -2423,38 +2437,73 @@ class OCRApp:
         self.thresholds, self.category_list, self.marked_indices, self.custom_cat_names = [], [], set(), {};
         self.refresh_all()
     
-    def add_spaces_to_tree_items(self):
-        """为分类目录树中的项目名称添加空格"""
+    def add_spaces_to_tree_items(self, silent=False):
+        """为分类目录树中的项目名称添加空格。
+        silent=True 时静默执行，不弹窗，返回修改数量。
+        """
         try:
             if self.df.empty:
-                messagebox.showwarning("提示", "没有数据可以处理！")
-                return
-            
-            # 直接应用规则，不再弹出窗口
-            # 默认使用“数字编号”预设，或者结合所有预设的规则
+                if not silent:
+                    messagebox.showwarning("提示", "没有数据可以处理！")
+                return 0
+
             all_custom_chars = []
-            
-            # 收集所有预设中的自定义字符
             if self.space_presets:
                 for preset in self.space_presets.values():
                     chars = preset.get('custom_chars', '')
                     if chars:
                         all_custom_chars.append(chars)
-            
+
             if not all_custom_chars:
-                # 如果没有预设，提示用户去设置
-                if messagebox.askyesno("提示", "未找到空格规则预设。\n是否前往【空格设置】进行配置？"):
-                    self.show_space_settings()
-                return
-                
-            # 合并所有规则 (简单合并，用|连接)
+                if not silent:
+                    if messagebox.askyesno("提示", "未找到空格规则预设。\n是否前往【空格设置】进行配置？"):
+                        self.show_space_settings()
+                return 0
+
             combined_chars = "|".join(all_custom_chars)
-            
-            # 直接应用
-            self.apply_space_rules([], combined_chars)
-               
+            return self.apply_space_rules([], combined_chars, silent=silent)
+
         except Exception as e:
-            messagebox.showerror("错误", f"处理失败：{str(e)}")
+            if not silent:
+                messagebox.showerror("错误", f"处理失败：{str(e)}")
+            return 0
+
+    def apply_corrections(self):
+        """统一执行常用修正：加空格、拆分A组、清理规则。一次性汇报结果，不弹多个窗口。"""
+        if self.df.empty:
+            messagebox.showwarning("提示", "没有数据可以处理！")
+            return
+
+        # --- 加空格 ---
+        space_modified = self.add_spaces_to_tree_items(silent=True)
+
+        # --- 拆分 A 组 ---
+        split_count = self._split_group_a_silent()
+
+        # --- 清理规则 ---
+        filter_changed, filter_removed = self._apply_filter_rules_silent()
+
+        # 统一刷新一次
+        self.category_list, self.marked_indices = [], set()
+        self.refresh_all()
+
+        # 汇总结果
+        parts = []
+        if space_modified:
+            parts.append(f"加空格：修改 {space_modified} 行")
+        if split_count:
+            parts.append(f"拆分A组：{split_count} 个项目")
+        if filter_changed:
+            msg = f"清理规则：修改 {filter_changed} 行"
+            if filter_removed:
+                msg += f"（删除空行 {filter_removed} 个）"
+            parts.append(msg)
+
+        if parts:
+            self.show_temp_message("✓ 修正完成：" + " | ".join(parts))
+            messagebox.showinfo("修正完成", "\n".join(parts))
+        else:
+            self.show_temp_message("✓ 修正完成，无需修改")
     
     def show_space_rules_dialog(self):
         """显示空格规则选择对话框"""
@@ -2590,8 +2639,8 @@ class OCRApp:
         tk.Button(btn_frame, text="取消", command=rules_window.destroy,
                  bg="#757575", fg="white", padx=15, pady=8).pack(side=tk.RIGHT)
     
-    def apply_space_rules(self, selected_rules, custom_chars):
-        """应用空格规则到数据"""
+    def apply_space_rules(self, selected_rules, custom_chars, silent=False):
+        """应用空格规则到数据。silent=True 时不弹窗，返回修改数量。"""
         try:
             modified_count = 0
             total_count = len(self.df)
@@ -2604,22 +2653,26 @@ class OCRApp:
                     self.df.loc[idx, 'Label'] = modified_text
                     modified_count += 1
             
-            # 刷新显示
-            self.refresh_all()
-            
-            # 显示结果
-            if modified_count > 0:
-                self.show_temp_message(f"✓ 已处理 {modified_count}/{total_count} 个项目")
-                messagebox.showinfo("处理完成", 
-                    f"空格插入完成！\n\n"
-                    f"总项目数：{total_count}\n"
-                    f"已修改：{modified_count}\n"
-                    f"未修改：{total_count - modified_count}")
-            else:
-                messagebox.showinfo("处理完成", "没有项目需要修改。")
+            if not silent:
+                # 刷新显示
+                self.refresh_all()
+                # 显示结果
+                if modified_count > 0:
+                    self.show_temp_message(f"✓ 已处理 {modified_count}/{total_count} 个项目")
+                    messagebox.showinfo("处理完成", 
+                        f"空格插入完成！\n\n"
+                        f"总项目数：{total_count}\n"
+                        f"已修改：{modified_count}\n"
+                        f"未修改：{total_count - modified_count}")
+                else:
+                    messagebox.showinfo("处理完成", "没有项目需要修改。")
+
+            return modified_count
                 
         except Exception as e:
-            messagebox.showerror("错误", f"应用规则失败：{str(e)}")
+            if not silent:
+                messagebox.showerror("错误", f"应用规则失败：{str(e)}")
+            return 0
     
     def preview_space_changes(self, selected_rules, custom_chars):
         """预览空格规则的效果"""
@@ -2712,57 +2765,268 @@ class OCRApp:
         return result
     
     def show_space_settings(self):
-        """显示空格规则设置管理窗口"""
-        settings_window = tk.Toplevel(self.root)
-        settings_window.title("空格规则设置管理")
-        settings_window.geometry("600x400")
-        settings_window.transient(self.root)
-        settings_window.grab_set()
-        
-        # 居中显示
-        settings_window.update_idletasks()
-        x = (settings_window.winfo_screenwidth() // 2) - (300)
-        y = (settings_window.winfo_screenheight() // 2) - (200)
-        settings_window.geometry(f"600x400+{x}+{y}")
-        
-        tk.Label(settings_window, text="⚙️ 空格规则设置", 
-                font=("Microsoft YaHei", 14, "bold")).pack(pady=15)
-        
-        # 文本框区域
-        tk.Label(settings_window, text="请输入要加空格的文字（用逗号或|分隔）：", 
-                font=("Microsoft YaHei", 10)).pack(anchor=tk.W, padx=20, pady=(10, 5))
-        
-        chars_text = scrolledtext.ScrolledText(settings_window, height=10, 
-                                             font=("Microsoft YaHei", 10))
-        chars_text.pack(fill=tk.BOTH, expand=True, padx=20, pady=5)
-        
-        # 加载现有内容 (从默认预设或所有预设合并)
+        """显示空格规则和清理规则的合并设置窗口"""
+        settings_window = self.create_popup_window(self.root, "空格和清理规则设置", "space_filter_settings", 860, 670)
+        settings_window.configure(bg="#F8FAFC")
+
+        colors = {
+            "bg": "#F8FAFC",
+            "card": "#FFFFFF",
+            "border": "#DDE7F3",
+            "text": "#0F172A",
+            "muted": "#64748B",
+            "blue": "#2563EB",
+            "blue_soft": "#EAF2FF",
+            "green": "#16A34A",
+            "green_soft": "#DCFCE7",
+            "green_border": "#B7E4C7",
+            "danger": "#EF4444",
+        }
+
+        def make_button(parent, text, command, bg="#FFFFFF", fg="#334155", padx=12, pady=5, bold=False):
+            btn = tk.Button(parent, text=text, command=command, bg=bg, fg=fg,
+                            activebackground=bg, activeforeground=fg,
+                            relief=tk.FLAT, bd=0, cursor="hand2",
+                            font=("Microsoft YaHei", 9, "bold" if bold else "normal"),
+                            padx=padx, pady=pady)
+            return btn
+
+        def make_card(parent):
+            outer = tk.Frame(parent, bg=colors["border"], padx=1, pady=1)
+            inner = tk.Frame(outer, bg=colors["card"], padx=16, pady=14)
+            inner.pack(fill=tk.BOTH, expand=True)
+            return outer, inner
+
+        def draw_line_numbers(event=None):
+            line_numbers.config(state=tk.NORMAL)
+            line_numbers.delete("1.0", tk.END)
+            line_count = int(chars_text.index("end-1c").split(".")[0])
+            line_numbers.insert("1.0", "\n".join(str(i) for i in range(1, max(line_count, 1) + 1)))
+            line_numbers.config(state=tk.DISABLED)
+
+        def sync_text_scroll(*args):
+            chars_text.yview(*args)
+            line_numbers.yview(*args)
+
+        def sync_from_text(*args):
+            scrollbar.set(*args)
+            line_numbers.yview_moveto(args[0])
+
+        footer = tk.Frame(settings_window, bg="#FFFFFF", padx=24, pady=12,
+                          highlightthickness=1, highlightbackground="#E5E7EB")
+        footer.pack(fill=tk.X, side=tk.BOTTOM)
+
+        main = tk.Frame(settings_window, bg=colors["bg"])
+        main.pack(fill=tk.BOTH, expand=True)
+
+        header = tk.Frame(main, bg=colors["bg"])
+        header.pack(fill=tk.X, padx=28, pady=(18, 10))
+        tk.Label(header, text="⚙", bg=colors["bg"], fg=colors["blue"],
+                 font=("Microsoft YaHei", 24, "bold")).pack()
+        tk.Label(header, text="空格和清理规则设置", bg=colors["bg"], fg=colors["text"],
+                 font=("Microsoft YaHei", 17, "bold")).pack(pady=(0, 6))
+        tk.Label(header, text="在这里统一管理加空格规则，以及需要从名称中去掉的文字或符号",
+                 bg=colors["bg"], fg=colors["muted"], font=("Microsoft YaHei", 9)).pack()
+
+        content = tk.Frame(main, bg=colors["bg"])
+        content.pack(fill=tk.BOTH, expand=True, padx=26, pady=(6, 12))
+        content.grid_columnconfigure(0, weight=1, uniform="rules")
+        content.grid_columnconfigure(1, weight=1, uniform="rules")
+        content.grid_rowconfigure(0, weight=1)
+
+        space_outer, space_card = make_card(content)
+        space_outer.grid(row=0, column=0, sticky="nsew", padx=(0, 8))
+        filter_outer, filter_card = make_card(content)
+        filter_outer.grid(row=0, column=1, sticky="nsew", padx=(8, 0))
+
+        space_card.grid_columnconfigure(0, weight=1)
+        space_card.grid_rowconfigure(3, weight=1)
+        filter_card.grid_columnconfigure(0, weight=1)
+        filter_card.grid_rowconfigure(3, weight=1)
+
+        space_title = tk.Frame(space_card, bg=colors["card"])
+        space_title.grid(row=0, column=0, sticky="ew")
+        tk.Label(space_title, text="▣  空格规则", bg=colors["card"], fg=colors["blue"],
+                 font=("Microsoft YaHei", 10, "bold")).pack(side=tk.LEFT)
+        help_btn = make_button(space_title, "? 帮助", lambda: messagebox.showinfo(
+            "空格规则帮助",
+            "每行输入一个两个字的词，保存后会在两个字之间自动加空格。\n例如：一时 会处理成 一 时",
+            parent=settings_window), bg=colors["blue_soft"], fg=colors["blue"], padx=9, pady=2)
+        help_btn.pack(side=tk.RIGHT)
+
+        tk.Label(space_card, text="将以下文字按“每组两个字”加空格（每行一个，回车换行或粘贴多行）",
+                 bg=colors["card"], fg=colors["muted"], font=("Microsoft YaHei", 8)).grid(row=1, column=0, sticky="w", pady=(12, 8))
+
+        example = tk.Frame(space_card, bg=colors["blue_soft"], highlightthickness=1, highlightbackground="#BFDBFE")
+        example.grid(row=2, column=0, sticky="ew", pady=(0, 8))
+        tk.Label(example, text="ⓘ  示例： 一时、二时、三时   →   一 时、二 时、三 时",
+                 bg=colors["blue_soft"], fg=colors["blue"], font=("Microsoft YaHei", 9)).pack(anchor=tk.W, padx=10, pady=6)
+
+        editor = tk.Frame(space_card, bg="#D7E3F5", highlightthickness=1, highlightbackground="#BFDBFE")
+        editor.grid(row=3, column=0, sticky="nsew")
+        editor.grid_columnconfigure(1, weight=1)
+        editor.grid_rowconfigure(0, weight=1)
+        line_numbers = tk.Text(editor, width=4, bg="#F8FAFC", fg="#64748B", relief=tk.FLAT,
+                               bd=0, padx=8, pady=8, font=("Consolas", 10), state=tk.DISABLED)
+        line_numbers.grid(row=0, column=0, sticky="ns")
+        chars_text = tk.Text(editor, wrap=tk.NONE, bg="#FFFFFF", fg=colors["text"],
+                             insertbackground=colors["blue"], relief=tk.FLAT, bd=0,
+                             padx=8, pady=8, font=("Microsoft YaHei", 10),
+                             yscrollcommand=sync_from_text)
+        chars_text.grid(row=0, column=1, sticky="nsew")
+        scrollbar = ttk.Scrollbar(editor, orient=tk.VERTICAL, command=sync_text_scroll)
+        scrollbar.grid(row=0, column=2, sticky="ns")
+
         current_chars = []
         if self.space_presets:
             for preset in self.space_presets.values():
                 chars = preset.get('custom_chars', '')
                 if chars:
                     current_chars.append(chars)
-        
-        # 简单去重并合并
-        initial_content = "|".join(current_chars)
-        # 清理一下多余的分隔符
-        import re
-        tokens = re.split(r'[|,\s，]+', initial_content)
+        tokens = re.split(r'[|,\s，]+', "|".join(current_chars))
         tokens = [t.strip() for t in tokens if t.strip()]
-        initial_content = "|".join(tokens)
-        
-        chars_text.insert("1.0", initial_content)
-        
+        chars_text.insert("1.0", "\n".join(tokens))
+        draw_line_numbers()
+        chars_text.bind("<KeyRelease>", draw_line_numbers)
+        chars_text.bind("<MouseWheel>", lambda e: settings_window.after_idle(draw_line_numbers))
+
+        tk.Label(space_card, text="💡 提示：每个词为2个字，按回车换行或粘贴多行",
+                 bg=colors["card"], fg=colors["blue"], font=("Microsoft YaHei", 8)).grid(row=4, column=0, sticky="w", pady=(9, 0))
+
+        filter_title = tk.Frame(filter_card, bg=colors["card"])
+        filter_title.grid(row=0, column=0, sticky="ew")
+        tk.Label(filter_title, text="🗑  清理规则", bg=colors["card"], fg=colors["green"],
+                 font=("Microsoft YaHei", 10, "bold")).pack(side=tk.LEFT)
+        filter_help_btn = make_button(filter_title, "? 帮助", lambda: messagebox.showinfo(
+            "清理规则帮助",
+            "匹配到列表里的文字或符号时，会从名称中删除。\n支持普通文字或正则表达式。",
+            parent=settings_window), bg="#F0FDF4", fg="#166534", padx=9, pady=2)
+        filter_help_btn.pack(side=tk.RIGHT)
+
+        tk.Label(filter_card, text="匹配到以下内容时，将自动删除（支持普通文字或正则表达式）",
+                 bg=colors["card"], fg=colors["muted"], font=("Microsoft YaHei", 8)).grid(row=1, column=0, sticky="w", pady=(12, 8))
+
+        input_row = tk.Frame(filter_card, bg=colors["card"])
+        input_row.grid(row=2, column=0, sticky="ew", pady=(0, 12))
+        input_row.grid_columnconfigure(0, weight=1)
+        entry_var = tk.StringVar()
+        placeholder = "输入要清理的文字或符号，按 Enter 添加"
+        entry = tk.Entry(input_row, textvariable=entry_var, bg="#FFFFFF", fg="#94A3B8",
+                         insertbackground=colors["blue"], relief=tk.FLAT,
+                         highlightthickness=1, highlightbackground=colors["border"],
+                         highlightcolor="#93C5FD", font=("Microsoft YaHei", 9))
+        entry.insert(0, placeholder)
+        entry.grid(row=0, column=0, sticky="ew", ipady=7)
+
+        local_filter_rules = list(self.filter_rules)
+        chips_canvas = tk.Canvas(filter_card, bg=colors["card"], highlightthickness=0)
+        chips_scroll = ttk.Scrollbar(filter_card, orient=tk.VERTICAL, command=chips_canvas.yview)
+        chips_frame = tk.Frame(chips_canvas, bg=colors["card"])
+        chips_window = chips_canvas.create_window((0, 0), window=chips_frame, anchor="nw")
+        chips_canvas.configure(yscrollcommand=chips_scroll.set)
+        chips_canvas.grid(row=3, column=0, sticky="nsew")
+        chips_scroll.grid(row=3, column=1, sticky="ns", padx=(6, 0))
+
+        def clear_placeholder(event=None):
+            if entry_var.get() == placeholder:
+                entry.delete(0, tk.END)
+                entry.config(fg=colors["text"])
+
+        def restore_placeholder(event=None):
+            if not entry_var.get().strip():
+                entry.config(fg="#94A3B8")
+                entry_var.set(placeholder)
+
+        entry.bind("<FocusIn>", clear_placeholder)
+        entry.bind("<FocusOut>", restore_placeholder)
+
+        def resize_chips(event=None):
+            chips_canvas.itemconfigure(chips_window, width=chips_canvas.winfo_width())
+
+        def refresh_chips():
+            for child in chips_frame.winfo_children():
+                child.destroy()
+
+            header_row = tk.Frame(chips_frame, bg=colors["card"])
+            header_row.grid(row=0, column=0, columnspan=4, sticky="ew", pady=(0, 10))
+            tk.Label(header_row, text=f"当前规则（{len(local_filter_rules)}）", bg=colors["card"],
+                     fg=colors["text"], font=("Microsoft YaHei", 9, "bold")).pack(side=tk.LEFT)
+            if local_filter_rules:
+                clear_btn = make_button(header_row, "🗑 清空全部", clear_filter_rules,
+                                        bg=colors["card"], fg=colors["blue"], padx=4, pady=0)
+                clear_btn.pack(side=tk.RIGHT)
+
+            if not local_filter_rules:
+                tk.Label(chips_frame, text="暂无清理规则", bg=colors["card"], fg="#94A3B8",
+                         font=("Microsoft YaHei", 10)).grid(row=1, column=0, sticky="w", pady=10)
+            else:
+                max_cols = 4
+                for idx, rule in enumerate(local_filter_rules):
+                    chip = tk.Frame(chips_frame, bg=colors["green_soft"], padx=9, pady=5,
+                                    highlightthickness=1, highlightbackground=colors["green_border"])
+                    chip.grid(row=1 + idx // max_cols, column=idx % max_cols, sticky="w", padx=(0, 8), pady=(0, 8))
+                    tk.Label(chip, text=rule, bg=colors["green_soft"], fg="#14532D",
+                             font=("Microsoft YaHei", 9)).pack(side=tk.LEFT)
+                    close = tk.Label(chip, text="  ×", bg=colors["green_soft"], fg="#5B8F72",
+                                     font=("Microsoft YaHei", 10, "bold"), cursor="hand2")
+                    close.pack(side=tk.LEFT)
+                    close.bind("<Button-1>", lambda e, i=idx: delete_filter_rule(i))
+
+            chips_frame.update_idletasks()
+            chips_canvas.configure(scrollregion=chips_canvas.bbox("all"))
+
+        def add_filter_rule():
+            text = entry_var.get().strip()
+            if not text or text == placeholder:
+                return
+            for item in re.split(r'[|\n]+', text):
+                item = item.strip()
+                if item and item not in local_filter_rules:
+                    local_filter_rules.append(item)
+            entry_var.set("")
+            restore_placeholder()
+            refresh_chips()
+            entry.focus_set()
+
+        def delete_filter_rule(index):
+            if 0 <= index < len(local_filter_rules):
+                local_filter_rules.pop(index)
+                refresh_chips()
+
+        def clear_filter_rules():
+            local_filter_rules.clear()
+            refresh_chips()
+
+        add_btn = make_button(input_row, "+ 添加", add_filter_rule,
+                              bg="#22C55E", fg="#FFFFFF", padx=14, pady=7, bold=True)
+        add_btn.grid(row=0, column=1, padx=(8, 0))
+        entry.bind('<Return>', lambda e: add_filter_rule())
+        chips_canvas.bind("<Configure>", resize_chips)
+        refresh_chips()
+
+        usage = tk.Frame(main, bg="#EAF2FF", padx=18, pady=12,
+                         highlightthickness=1, highlightbackground="#C7DBF7")
+        usage.pack(fill=tk.X, padx=26, pady=(0, 12))
+        tk.Label(usage, text="💡", bg="#EAF2FF", fg=colors["blue"],
+                 font=("Microsoft YaHei", 16)).pack(side=tk.LEFT, padx=(0, 12))
+        usage_text = tk.Frame(usage, bg="#EAF2FF")
+        usage_text.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        tk.Label(usage_text, text="使用说明", bg="#EAF2FF", fg=colors["text"],
+                 font=("Microsoft YaHei", 10, "bold")).pack(anchor=tk.W)
+        tk.Label(usage_text, text="• 空格规则：将每组两个字之间自动插入空格（如“一时” → “一 时”）",
+                 bg="#EAF2FF", fg="#334155", font=("Microsoft YaHei", 8)).pack(anchor=tk.W, pady=(4, 0))
+        tk.Label(usage_text, text="• 清理规则：匹配到列表中的内容时，将从名称中删除",
+                 bg="#EAF2FF", fg="#334155", font=("Microsoft YaHei", 8)).pack(anchor=tk.W)
+
+        def close_window():
+            settings_window.destroy()
+
         def save_settings():
-            content = chars_text.get("1.0", tk.END).strip()
-            
-            # 格式化一下
-            tokens = re.split(r'[|,\s，]+', content)
+            raw_content = chars_text.get("1.0", tk.END).strip()
+            tokens = re.split(r'[|,\s，]+', raw_content)
             tokens = [t.strip() for t in tokens if t.strip()]
             formatted_content = "|".join(tokens)
-            
-            # 保存为单一的默认预设
+
             self.space_presets = {
                 "Default": {
                     "custom_chars": formatted_content,
@@ -2770,16 +3034,16 @@ class OCRApp:
                     "description": "默认规则"
                 }
             }
+            self.filter_rules = list(local_filter_rules)
             self.save_space_config()
-            messagebox.showinfo("成功", "设置已保存")
+            self.save_filter_config()
+            self.show_temp_message("✓ 空格和清理规则已保存")
             settings_window.destroy()
-        
-        btn_frame = tk.Frame(settings_window, pady=15)
-        btn_frame.pack(fill=tk.X)
-        
-        tk.Button(btn_frame, text="保 存", command=save_settings,
-                 bg="#4CAF50", fg="white", font=("Microsoft YaHei", 10, "bold"),
-                 padx=30, pady=8).pack()
+
+        make_button(footer, "取消", close_window, bg="#FFFFFF", fg="#334155",
+                    padx=26, pady=8).pack(side=tk.RIGHT, padx=(10, 0))
+        make_button(footer, "💾 保存", save_settings, bg=colors["blue"], fg="#FFFFFF",
+                    padx=28, pady=8, bold=True).pack(side=tk.RIGHT)
     
     def show_preset_manager(self, parent_window):
         """显示预设管理器（简化版）"""
@@ -5437,89 +5701,7 @@ class OCRApp:
 
     def show_filter_settings(self):
         """显示过滤清理规则设置窗口"""
-        win = self.create_popup_window(self.root, "清理规则设置", "filter_settings", 500, 480)
-
-        tk.Label(win, text="🧹 清理规则设置",
-                 font=("Microsoft YaHei", 13, "bold")).pack(pady=(15, 5))
-        tk.Label(win, text="名称列中包含以下内容将被删除（保留该行，只删内容）",
-                 fg="gray", font=("Microsoft YaHei", 9)).pack()
-
-        # 规则列表
-        list_frame = tk.Frame(win)
-        list_frame.pack(fill=tk.BOTH, expand=True, padx=20, pady=10)
-
-        scrollbar = ttk.Scrollbar(list_frame)
-        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
-        listbox = tk.Listbox(list_frame, yscrollcommand=scrollbar.set,
-                             font=("Microsoft YaHei", 11), selectmode=tk.EXTENDED)
-        listbox.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        scrollbar.config(command=listbox.yview)
-
-        for rule in self.filter_rules:
-            listbox.insert(tk.END, rule)
-
-        # 输入区
-        input_frame = tk.Frame(win)
-        input_frame.pack(fill=tk.X, padx=20, pady=5)
-
-        entry_var = tk.StringVar()
-        entry = tk.Entry(input_frame, textvariable=entry_var,
-                         font=("Microsoft YaHei", 11))
-        entry.pack(side=tk.LEFT, fill=tk.X, expand=True)
-        entry.focus_set()
-
-        def add_rule():
-            text = entry_var.get().strip()
-            if not text:
-                return
-            # 支持用 | 或换行一次添加多个
-            for t in re.split(r'[|\n]+', text):
-                t = t.strip()
-                if t and t not in self.filter_rules:
-                    self.filter_rules.append(t)
-                    listbox.insert(tk.END, t)
-            entry_var.set('')
-            entry.focus_set()
-
-        def delete_selected():
-            selected = list(reversed(listbox.curselection()))
-            for i in selected:
-                self.filter_rules.pop(i)
-                listbox.delete(i)
-
-        tk.Button(input_frame, text="➕ 添加", command=add_rule,
-                  bg="#4CAF50", fg="white", padx=10).pack(side=tk.LEFT, padx=5)
-        tk.Button(input_frame, text="❌ 删除选中", command=delete_selected,
-                  bg="#f44336", fg="white", padx=10).pack(side=tk.LEFT)
-
-        entry.bind('<Return>', lambda e: add_rule())
-
-        tk.Label(win, text="💡 支持用 | 分隔一次输入多个，如：。|，|（",
-                 fg="gray", font=("Arial", 9)).pack()
-
-        # 底部按钮
-        btn_frame = tk.Frame(win)
-        btn_frame.pack(fill=tk.X, padx=20, pady=15)
-
-        def apply_and_close():
-            self.save_filter_config()
-            win.destroy()
-            self.apply_filter_rules()
-
-        def save_only():
-            self.save_filter_config()
-            self.show_temp_message("✓ 规则已保存")
-            win.destroy()
-
-        tk.Button(btn_frame, text="应用并清除匹配内容", command=apply_and_close,
-                  bg="#E91E63", fg="white", font=("Microsoft YaHei", 10, "bold"),
-                  padx=15, pady=8).pack(side=tk.LEFT, padx=5)
-        tk.Button(btn_frame, text="仅保存规则", command=save_only,
-                  bg="#2196F3", fg="white", font=("Microsoft YaHei", 10),
-                  padx=15, pady=8).pack(side=tk.LEFT, padx=5)
-        tk.Button(btn_frame, text="取消", command=win.destroy,
-                  bg="#757575", fg="white", font=("Microsoft YaHei", 10),
-                  padx=15, pady=8).pack(side=tk.RIGHT, padx=5)
+        self.show_space_settings()
 
     def apply_filter_rules(self):
         """应用过滤规则，从名称列中删除指定内容，清理后为空的行直接删除"""
@@ -5554,6 +5736,77 @@ class OCRApp:
         if removed > 0:
             msg += f"\n其中 {removed} 行内容清空后已自动删除"
         messagebox.showinfo("清理完成", msg)
+
+    def _apply_filter_rules_silent(self):
+        """静默执行过滤规则，返回 (changed, removed) 数量，不弹窗不刷新。"""
+        if self.df.empty or not self.filter_rules:
+            return 0, 0
+
+        before_labels = self.df['Label'].copy()
+        for rule in self.filter_rules:
+            self.df['Label'] = self.df['Label'].str.replace(re.escape(rule), '', regex=True)
+        self.df['Label'] = self.df['Label'].str.strip()
+
+        changed = int((self.df['Label'] != before_labels).sum())
+
+        empty_mask = self.df['Label'] == ''
+        removed = int(empty_mask.sum())
+        if removed > 0:
+            self.df = self.df[~empty_mask].reset_index(drop=True)
+            self.reorder_dataframe()
+
+        return changed, removed
+
+    def _split_group_a_silent(self):
+        """静默拆分所有 A 组且文字数 > 2 的项目，返回拆分数量，不弹窗不刷新。"""
+        if self.df.empty:
+            return 0
+
+        items_to_split = [
+            {'idx': idx, 'label': row['Label'], 'y': row['Y'],
+             'x': row['X'], 'order': row.get('Order', idx)}
+            for idx, row in self.df.iterrows()
+            if row['Group'] == 'A' and len(row['Label']) > 2
+        ]
+
+        if not items_to_split:
+            return 0
+
+        items_to_split.sort(key=lambda x: x['idx'], reverse=True)
+        split_count = 0
+
+        for item in items_to_split:
+            idx = item['idx']
+            label = item['label']
+            order = item['order']
+
+            first_part = label[:2]
+            second_part = label[2:]
+
+            self.df = self.df.drop(idx).reset_index(drop=True)
+            self.reorder_dataframe()
+
+            insert_pos = len(self.df)
+            for i, row in self.df.iterrows():
+                if row.get('Order', i) >= order:
+                    insert_pos = i
+                    break
+
+            first_row = pd.DataFrame(
+                [[first_part, item['y'], item['x'], 'A', order]],
+                columns=['Label', 'Y', 'X', 'Group', 'Order'])
+            second_row = pd.DataFrame(
+                [[second_part, item['y'], item['x'] + 10, 'C', order + 0.1]],
+                columns=['Label', 'Y', 'X', 'Group', 'Order'])
+
+            self.df = pd.concat([
+                self.df.iloc[:insert_pos], first_row, second_row, self.df.iloc[insert_pos:]
+            ]).reset_index(drop=True)
+
+            split_count += 1
+
+        self.reorder_dataframe()
+        return split_count
     
     def get_system_fonts(self):
         """获取系统可用字体列表"""
@@ -7494,108 +7747,388 @@ class OCRApp:
     
     def show_font_style_settings(self):
         """显示字体样式设置窗口"""
-        settings_window = self.create_popup_window(self.root, "字体样式设置", "font_style_settings", 700, 600)
-        
-        tk.Label(settings_window, text="🎨 字体样式设置", 
-                font=("Arial", 14, "bold")).pack(pady=15)
-        
-        tk.Label(settings_window, text="为以指定字符开头的项目设置特殊字体样式", 
-                fg="gray", font=("Arial", 10)).pack(pady=5)
-        
-        # 规则列表框架
-        list_frame = tk.LabelFrame(settings_window, text="字体样式规则", padx=10, pady=10)
-        list_frame.pack(fill=tk.BOTH, expand=True, padx=20, pady=10)
-        
-        # 创建列表框和滚动条
-        list_container = tk.Frame(list_frame)
-        list_container.pack(fill=tk.BOTH, expand=True)
-        
-        scrollbar = tk.Scrollbar(list_container)
-        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
-        
-        rules_listbox = tk.Listbox(list_container, yscrollcommand=scrollbar.set,
-                                  font=("Arial", 11), height=15)
-        rules_listbox.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        scrollbar.config(command=rules_listbox.yview)
-        
-        def refresh_rules_list():
-            rules_listbox.delete(0, tk.END)
-            for prefix, style in self.font_style_rules.items():
-                font_info = f"{style.get('font_family', 'Microsoft YaHei')} {style.get('font_size', 12)}"
-                if style.get('font_weight') == 'bold':
-                    font_info += " 粗体"
-                color_info = style.get('color', '#000000')
-                desc = style.get('description', '')
-                
-                display_text = f"'{prefix}' → {font_info} {color_info}"
-                if desc:
-                    display_text += f" ({desc})"
-                
-                rules_listbox.insert(tk.END, display_text)
-        
-        refresh_rules_list()
-        
-        # 按钮框架
-        btn_frame = tk.Frame(settings_window, pady=15)
-        btn_frame.pack(fill=tk.X)
-        
+        win = self.create_popup_window(self.root, "字体样式设置", "font_style_settings", 1000, 840)
+        win.configure(bg="#F8FAFC")
+        win.minsize(980, 820)
+
+        ui_font = ("Microsoft YaHei", 9)
+        title_font = ("Microsoft YaHei", 15, "bold")
+        label_font = ("Microsoft YaHei", 9, "bold")
+        muted = "#64748B"
+        border = "#DDE3EA"
+        primary = "#2563EB"
+        current_prefix = tk.StringVar(value="")
+
+        style = ttk.Style(win)
+        style.configure("FontRule.Treeview", font=("Microsoft YaHei", 9), rowheight=34, borderwidth=0)
+        style.configure("FontRule.Treeview.Heading", font=("Microsoft YaHei", 9, "bold"))
+
+        def button(parent, text, command, bg="#FFFFFF", fg="#111827", width=None):
+            return tk.Button(parent, text=text, command=command, bg=bg, fg=fg,
+                             activebackground=bg, activeforeground=fg,
+                             relief=tk.FLAT, bd=0, padx=12, pady=7, width=width,
+                             font=("Microsoft YaHei", 9), cursor="hand2")
+
+        header = tk.Frame(win, bg="#F8FAFC")
+        header.pack(fill=tk.X, padx=16, pady=(12, 8))
+        icon = tk.Label(header, text="A", bg="#635BFF", fg="white",
+                        font=("Microsoft YaHei", 15, "bold"), width=2)
+        icon.pack(side=tk.LEFT, padx=(0, 12))
+        title_box = tk.Frame(header, bg="#F8FAFC")
+        title_box.pack(side=tk.LEFT)
+        tk.Label(title_box, text="字体样式设置", bg="#F8FAFC", fg="#111827",
+                 font=title_font).pack(anchor=tk.W)
+        tk.Label(title_box, text="为以指定字符开头的项目设置特殊字体样式",
+                 bg="#F8FAFC", fg=muted, font=ui_font).pack(anchor=tk.W, pady=(2, 0))
+        button(header, "重置", lambda: load_rule(current_prefix.get(), force=True),
+               bg="#FFFFFF", fg="#374151").pack(side=tk.RIGHT)
+
+        main = tk.Frame(win, bg="#F8FAFC")
+        main.pack(fill=tk.BOTH, expand=True, padx=16)
+        main.grid_columnconfigure(0, weight=1, minsize=430)
+        main.grid_columnconfigure(1, weight=1, minsize=420)
+        main.grid_rowconfigure(0, weight=1)
+
+        left = tk.Frame(main, bg="#F8FAFC")
+        left.grid(row=0, column=0, sticky="nsew", padx=(0, 14))
+        right = tk.Frame(main, bg="#F8FAFC")
+        right.grid(row=0, column=1, sticky="nsew")
+
+        left_bar = tk.Frame(left, bg="#F8FAFC")
+        left_bar.pack(fill=tk.X, pady=(0, 8))
+        tk.Label(left_bar, text="样式规则列表", bg="#F8FAFC", fg="#111827",
+                 font=label_font).pack(side=tk.LEFT)
+        up_down = tk.Frame(left_bar, bg="#F8FAFC")
+        up_down.pack(side=tk.RIGHT)
+
+        columns = ("prefix", "font", "size", "weight", "color", "enabled", "priority")
+        rules_tree = ttk.Treeview(left, columns=columns, show="headings", style="FontRule.Treeview",
+                                  selectmode="browse")
+        headings = {
+            "prefix": ("匹配前缀", 80),
+            "font": ("字体", 130),
+            "size": ("大小", 55),
+            "weight": ("粗细", 65),
+            "color": ("颜色", 85),
+            "enabled": ("启用", 55),
+            "priority": ("优先级", 55),
+        }
+        for col, (text, width) in headings.items():
+            rules_tree.heading(col, text=text)
+            rules_tree.column(col, width=width, anchor=tk.CENTER if col in ("size", "enabled", "priority") else tk.W)
+        rules_tree.pack(fill=tk.BOTH, expand=True)
+        rules_tree.tag_configure("disabled", foreground="#94A3B8")
+
+        tk.Label(left, text="优先级数字越小，优先级越高", bg="#F8FAFC", fg=muted,
+                 font=("Microsoft YaHei", 8)).pack(anchor=tk.W, pady=(8, 0))
+
+        form_title = tk.Label(right, text="编辑当前规则", bg="#F8FAFC", fg="#111827",
+                              font=label_font)
+        form_title.pack(anchor=tk.W, pady=(0, 8))
+
+        prefix_var = tk.StringVar()
+        font_family_var = tk.StringVar()
+        font_size_var = tk.StringVar()
+        font_weight_var = tk.StringVar()
+        color_var = tk.StringVar()
+        group_mode_var = tk.StringVar(value="color")
+        target_group_var = tk.StringVar(value="A")
+        desc_var = tk.StringVar()
+        enabled_var = tk.BooleanVar(value=True)
+        test_text_var = tk.StringVar(value="德魔样振子瑞")
+
+        available_fonts = self.get_system_fonts()
+        usable_fonts = [f for f in available_fonts if not f.startswith("---")]
+
+        def section(parent, title):
+            frame = tk.LabelFrame(parent, text=title, bg="#F8FAFC", fg="#111827",
+                                  font=label_font, bd=1, relief=tk.SOLID, padx=10, pady=7)
+            frame.pack(fill=tk.X, pady=(0, 8))
+            return frame
+
+        prefix_frame = tk.Frame(right, bg="#F8FAFC")
+        prefix_frame.pack(fill=tk.X, pady=(0, 8))
+        tk.Label(prefix_frame, text="匹配前缀", bg="#F8FAFC", fg="#111827", font=label_font).pack(anchor=tk.W)
+        prefix_entry = tk.Entry(prefix_frame, textvariable=prefix_var, font=ui_font, relief=tk.SOLID, bd=1)
+        prefix_entry.pack(fill=tk.X, pady=(4, 3), ipady=4)
+        tk.Label(prefix_frame, text="例：输入“德”表示以“德”开头的项目",
+                 bg="#F8FAFC", fg=muted, font=("Microsoft YaHei", 8)).pack(anchor=tk.W)
+
+        preview_frame = tk.LabelFrame(right, text="实时预览", bg="#F8FAFC", fg="#111827",
+                                      font=label_font, bd=1, relief=tk.SOLID, padx=12, pady=10)
+        preview_frame.pack(fill=tk.X, pady=(0, 8))
+        preview_label = tk.Label(preview_frame, text="", bg="#FFFFFF", fg="#FF0000",
+                                 font=("Microsoft YaHei", 22), anchor=tk.CENTER, height=1)
+        preview_label.pack(fill=tk.X)
+        tk.Label(preview_frame, text="当前设置的效果预览", bg="#F8FAFC", fg=muted,
+                 font=("Microsoft YaHei", 8)).pack(anchor=tk.W, pady=(6, 0))
+
+        font_frame = section(right, "字体设置")
+        tk.Label(font_frame, text="字体", bg="#F8FAFC", font=ui_font).grid(row=0, column=0, sticky=tk.W, pady=3)
+        font_combo = ttk.Combobox(font_frame, textvariable=font_family_var, values=available_fonts,
+                                  state="readonly", width=24)
+        font_combo.grid(row=0, column=1, sticky=tk.W, padx=12, pady=3)
+        tk.Label(font_frame, text="大小", bg="#F8FAFC", font=ui_font).grid(row=1, column=0, sticky=tk.W, pady=3)
+        ttk.Combobox(font_frame, textvariable=font_size_var, values=[str(i) for i in range(8, 31)],
+                     state="readonly", width=10).grid(row=1, column=1, sticky=tk.W, padx=12, pady=3)
+        tk.Label(font_frame, text="粗细", bg="#F8FAFC", font=ui_font).grid(row=2, column=0, sticky=tk.W, pady=3)
+        ttk.Combobox(font_frame, textvariable=font_weight_var, values=["Light", "normal", "bold"],
+                     state="readonly", width=10).grid(row=2, column=1, sticky=tk.W, padx=12, pady=3)
+
+        color_frame = section(right, "颜色设置")
+        color_row = tk.Frame(color_frame, bg="#F8FAFC")
+        color_row.pack(fill=tk.X)
+        swatch = tk.Label(color_row, width=5, bg="#FF0000", relief=tk.SOLID, bd=1)
+        swatch.pack(side=tk.LEFT, ipady=5)
+        color_entry = tk.Entry(color_row, textvariable=color_var, font=ui_font, width=12, relief=tk.SOLID, bd=1)
+        color_entry.pack(side=tk.LEFT, padx=10, ipady=4)
+
+        preset_colors = ["#FF0000", "#CC0000", "#FF8C00", "#00AA00", "#006600",
+                         "#0000FF", "#003399", "#9400D3", "#000000"]
+        preset_row = tk.Frame(color_frame, bg="#F8FAFC")
+        preset_row.pack(fill=tk.X, pady=(7, 0))
+        for c in preset_colors:
+            tk.Button(preset_row, bg=c, width=3, relief=tk.FLAT,
+                      command=lambda v=c: color_var.set(v)).pack(side=tk.LEFT, padx=(0, 4), ipady=5)
+
+        def choose_color():
+            from tkinter import colorchooser
+            color = colorchooser.askcolor(title="选择颜色", color=color_var.get())
+            if color[1]:
+                color_var.set(color[1])
+
+        button(color_row, "取色", choose_color, bg="#FFFFFF").pack(side=tk.LEFT)
+
+        group_frame = section(right, "分组方式")
+        tk.Radiobutton(group_frame, text="不分组", variable=group_mode_var, value="none",
+                       bg="#F8FAFC", font=ui_font).pack(anchor=tk.W)
+        color_radio = tk.Radiobutton(group_frame, text="按颜色自动分组（红色 → A，其他 → B）",
+                                     variable=group_mode_var, value="color",
+                                     bg="#F8FAFC", font=ui_font)
+        color_radio.pack(anchor=tk.W)
+        manual_row = tk.Frame(group_frame, bg="#F8FAFC")
+        manual_row.pack(fill=tk.X)
+        tk.Radiobutton(manual_row, text="手动指定分组", variable=group_mode_var, value="manual",
+                       bg="#F8FAFC", font=ui_font).pack(side=tk.LEFT)
+        group_combo = ttk.Combobox(manual_row, textvariable=target_group_var, values=["A", "B", "C"],
+                                   state="readonly", width=8)
+        group_combo.pack(side=tk.LEFT, padx=8)
+
+        desc_frame = tk.Frame(right, bg="#F8FAFC")
+        desc_frame.pack(fill=tk.X)
+        tk.Label(desc_frame, text="描述（可选）", bg="#F8FAFC", fg="#111827", font=label_font).pack(anchor=tk.W)
+        tk.Entry(desc_frame, textvariable=desc_var, font=ui_font, relief=tk.SOLID, bd=1).pack(fill=tk.X, pady=(4, 6), ipady=4)
+        tk.Checkbutton(right, text="启用此规则", variable=enabled_var, bg="#F8FAFC",
+                       font=ui_font).pack(anchor=tk.W)
+
+        test = tk.Frame(win, bg="#FFFFFF", highlightbackground=border, highlightthickness=1)
+        test.pack(fill=tk.X, padx=0, pady=(8, 0))
+        test_inner = tk.Frame(test, bg="#FFFFFF")
+        test_inner.pack(fill=tk.X, padx=16, pady=8)
+        tk.Label(test_inner, text="效果测试", bg="#FFFFFF", fg="#111827",
+                 font=label_font).grid(row=0, column=0, sticky=tk.W, pady=(0, 8))
+        tk.Label(test_inner, text="测试文本：", bg="#FFFFFF", font=ui_font).grid(row=1, column=0, sticky=tk.W)
+        tk.Entry(test_inner, textvariable=test_text_var, font=ui_font, relief=tk.SOLID, bd=1,
+                 width=28).grid(row=1, column=1, sticky=tk.W, padx=8, ipady=4)
+        tk.Label(test_inner, text="预览效果：", bg="#FFFFFF", font=ui_font).grid(row=1, column=2, sticky=tk.W, padx=(60, 8))
+        bottom_preview = tk.Label(test_inner, text="", bg="#FFFFFF", fg="#FF0000", font=("Microsoft YaHei", 18))
+        bottom_preview.grid(row=1, column=3, sticky=tk.W)
+
+        footer = tk.Frame(win, bg="#F8FAFC")
+        footer.pack(fill=tk.X, padx=16, pady=8)
+
+        def sorted_prefixes():
+            return list(self.font_style_rules.keys())
+
+        def normalize_weight(weight):
+            return "bold" if weight == "bold" else weight
+
+        def update_preview(*args):
+            try:
+                size = int(font_size_var.get() or 12)
+            except ValueError:
+                size = 12
+            family = font_family_var.get() or "Microsoft YaHei"
+            if family.startswith("---"):
+                family = "Microsoft YaHei"
+            weight = normalize_weight(font_weight_var.get())
+            font_parts = [family, size]
+            if weight == "bold":
+                font_parts.append("bold")
+            try:
+                color = color_var.get() or "#000000"
+                swatch.config(bg=color)
+                sample = test_text_var.get() or "德魔样振子瑞"
+                prefix_text = prefix_var.get().strip()
+                if prefix_text and not sample.startswith(prefix_text):
+                    sample = prefix_text + sample
+                preview_label.config(text=sample, fg=color, font=tuple(font_parts))
+                bottom_preview.config(text=sample, fg=color, font=tuple(font_parts))
+            except tk.TclError:
+                pass
+
+        def set_form_defaults():
+            current_prefix.set("")
+            prefix_var.set("")
+            font_family_var.set("Microsoft YaHei")
+            font_size_var.set("18")
+            font_weight_var.set("normal")
+            color_var.set("#FF0000")
+            group_mode_var.set("color")
+            target_group_var.set("A")
+            desc_var.set("")
+            enabled_var.set(True)
+            form_title.config(text="编辑当前规则")
+            update_preview()
+
+        def load_rule(prefix, force=False):
+            if not prefix or prefix not in self.font_style_rules:
+                set_form_defaults()
+                return
+            style_data = self.font_style_rules[prefix]
+            current_prefix.set(prefix)
+            prefix_var.set(prefix)
+            font_family_var.set(style_data.get("font_family", "Microsoft YaHei"))
+            font_size_var.set(str(style_data.get("font_size", 18)))
+            font_weight_var.set(style_data.get("font_weight", "normal"))
+            color_var.set(style_data.get("color", "#FF0000"))
+            target = style_data.get("target_group", "auto")
+            if target == "none":
+                group_mode_var.set("none")
+            elif target in ("A", "B", "C"):
+                group_mode_var.set("manual")
+                target_group_var.set(target)
+            else:
+                group_mode_var.set("color")
+            desc_var.set(style_data.get("description", ""))
+            enabled_var.set(style_data.get("enabled", True))
+            form_title.config(text=f"编辑当前规则 - {prefix}")
+            if force:
+                self.show_temp_message("✓ 已重置为已保存的规则")
+            update_preview()
+
+        def refresh_rules_list(select_prefix=None):
+            rules_tree.delete(*rules_tree.get_children())
+            for index, (rule_prefix, style_data) in enumerate(self.font_style_rules.items(), start=1):
+                enabled = style_data.get("enabled", True)
+                weight = style_data.get("font_weight", "normal")
+                rules_tree.insert("", tk.END, iid=rule_prefix,
+                                  values=(rule_prefix,
+                                          style_data.get("font_family", "Microsoft YaHei"),
+                                          style_data.get("font_size", 18),
+                                          weight,
+                                          style_data.get("color", "#000000"),
+                                          "是" if enabled else "否",
+                                          index),
+                                  tags=() if enabled else ("disabled",))
+            target = select_prefix if select_prefix in self.font_style_rules else None
+            if not target and self.font_style_rules:
+                target = next(iter(self.font_style_rules.keys()))
+            if target:
+                rules_tree.selection_set(target)
+                rules_tree.focus(target)
+                load_rule(target)
+            else:
+                set_form_defaults()
+
+        def save_current(close_after=False):
+            old_prefix = current_prefix.get()
+            new_prefix = prefix_var.get().strip()
+            if not new_prefix:
+                messagebox.showwarning("提示", "匹配前缀不能为空！")
+                return False
+            if old_prefix != new_prefix and new_prefix in self.font_style_rules:
+                if not messagebox.askyesno("规则已存在", f"规则「{new_prefix}」已存在，是否覆盖？"):
+                    return False
+            if old_prefix and old_prefix != new_prefix and old_prefix in self.font_style_rules:
+                del self.font_style_rules[old_prefix]
+
+            if group_mode_var.get() == "none":
+                target_group = "none"
+            elif group_mode_var.get() == "manual":
+                target_group = target_group_var.get()
+            else:
+                target_group = "auto"
+
+            self.font_style_rules[new_prefix] = {
+                "font_family": font_family_var.get(),
+                "font_size": int(font_size_var.get()),
+                "font_weight": font_weight_var.get(),
+                "color": color_var.get(),
+                "target_group": target_group,
+                "description": desc_var.get().strip(),
+                "enabled": enabled_var.get(),
+            }
+            self.save_font_style_config()
+
+            if enabled_var.get() and not self.df.empty:
+                effective_group = target_group
+                if effective_group == "auto":
+                    effective_group = "A" if self._is_red_color(color_var.get()) else "B"
+                if effective_group in ("A", "B", "C"):
+                    mask = self.df['Label'].str.lower().str.startswith(new_prefix.lower())
+                    changed = mask.sum()
+                    self.df.loc[mask, 'Group'] = effective_group
+                    if changed > 0:
+                        self.show_temp_message(f"✓ 已将 {changed} 个匹配项自动设为 {effective_group} 组")
+
+            current_prefix.set(new_prefix)
+            refresh_rules_list(new_prefix)
+            self.refresh_all()
+            if close_after:
+                win.destroy()
+            return True
+
         def add_rule():
-            self.show_font_style_editor(None, refresh_rules_list)
-        
-        def edit_rule():
-            selection = rules_listbox.curselection()
-            if not selection:
-                messagebox.showwarning("提示", "请先选择一个规则！")
-                return
-            
-            prefixes = list(self.font_style_rules.keys())
-            prefix = prefixes[selection[0]]
-            self.show_font_style_editor(prefix, refresh_rules_list)
-        
+            rules_tree.selection_remove(rules_tree.selection())
+            set_form_defaults()
+            prefix_entry.focus_set()
+
         def delete_rule():
-            selection = rules_listbox.curselection()
-            if not selection:
+            prefix = current_prefix.get()
+            if not prefix:
                 messagebox.showwarning("提示", "请先选择一个规则！")
                 return
-            
-            prefixes = list(self.font_style_rules.keys())
-            prefix = prefixes[selection[0]]
-            
             if messagebox.askyesno("确认删除", f"确定要删除规则「{prefix}」吗？"):
                 del self.font_style_rules[prefix]
                 self.save_font_style_config()
                 refresh_rules_list()
-                # 刷新显示
                 self.refresh_all()
-                messagebox.showinfo("成功", f"规则「{prefix}」已删除！")
-        
-        def apply_styles():
-            """应用字体样式到当前显示"""
+
+        def move_rule(direction):
+            prefix = current_prefix.get()
+            prefixes = sorted_prefixes()
+            if prefix not in prefixes:
+                return
+            index = prefixes.index(prefix)
+            new_index = index + direction
+            if new_index < 0 or new_index >= len(prefixes):
+                return
+            prefixes[index], prefixes[new_index] = prefixes[new_index], prefixes[index]
+            self.font_style_rules = {p: self.font_style_rules[p] for p in prefixes}
+            self.save_font_style_config()
+            refresh_rules_list(prefix)
             self.refresh_all()
-            messagebox.showinfo("成功", "字体样式已应用到分类目录树！")
-        
-        # 第一行按钮
-        btn_row1 = tk.Frame(btn_frame)
-        btn_row1.pack(fill=tk.X, pady=5)
-        
-        tk.Button(btn_row1, text="➕ 添加规则", command=add_rule,
-                 bg="#4CAF50", fg="white", padx=15, pady=8).pack(side=tk.LEFT, padx=5)
-        
-        tk.Button(btn_row1, text="✏️ 编辑规则", command=edit_rule,
-                 bg="#2196F3", fg="white", padx=15, pady=8).pack(side=tk.LEFT, padx=5)
-        
-        tk.Button(btn_row1, text="❌ 删除规则", command=delete_rule,
-                 bg="#F44336", fg="white", padx=15, pady=8).pack(side=tk.LEFT, padx=5)
-        
-        tk.Button(btn_row1, text="🎨 应用样式", command=apply_styles,
-                 bg="#FF9800", fg="white", padx=15, pady=8).pack(side=tk.RIGHT, padx=5)
-        
-        # 第二行按钮
-        btn_row2 = tk.Frame(btn_frame)
-        btn_row2.pack(fill=tk.X, pady=5)
-        
-        tk.Button(btn_row2, text="关闭", command=settings_window.destroy,
-                 bg="#757575", fg="white", padx=20, pady=8).pack(side=tk.RIGHT, padx=5)
+
+        def on_select(event=None):
+            selection = rules_tree.selection()
+            if selection:
+                load_rule(selection[0])
+
+        rules_tree.bind("<<TreeviewSelect>>", on_select)
+        button(left_bar, "+ 添加规则", add_rule, bg="#FFFFFF").pack(side=tk.RIGHT, padx=(0, 6))
+        button(left_bar, "删除规则", delete_rule, bg="#FFFFFF").pack(side=tk.RIGHT, padx=(0, 6))
+        button(up_down, "↑", lambda: move_rule(-1), bg="#FFFFFF", width=2).pack(side=tk.LEFT, padx=2)
+        button(up_down, "↓", lambda: move_rule(1), bg="#FFFFFF", width=2).pack(side=tk.LEFT, padx=2)
+
+        for var in (prefix_var, font_family_var, font_size_var, font_weight_var, color_var, test_text_var):
+            var.trace_add("write", update_preview)
+
+        button(footer, "取消", win.destroy, bg="#FFFFFF", fg="#374151").pack(side=tk.RIGHT, padx=(8, 0))
+        button(footer, "保存并应用", lambda: save_current(close_after=True),
+               bg=primary, fg="white").pack(side=tk.RIGHT)
+
+        refresh_rules_list()
     
     def show_font_style_editor(self, prefix, refresh_callback):
         """显示字体样式编辑器"""
