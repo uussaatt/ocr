@@ -4205,33 +4205,38 @@ class OCRApp:
             
             # 处理不同格式的路径
             file_list = []
-            if isinstance(files, str):
+            if isinstance(files, (tuple, list)):
+                file_list = [str(f) for f in files]
+            elif isinstance(files, str):
                 files = files.strip()
-                
-                # 尝试多种解析方式
-                if files.startswith('{'):
-                    # 格式1: {C:/path/file1.jpg} {C:/path/file2.jpg}
-                    import re
-                    file_list = re.findall(r'\{([^}]+)\}', files)
-                else:
-                    # 尝试智能分割路径
-                    # Windows路径格式: C:\path\file.jpg 或 C:/path/file.jpg
-                    import re
-                    # 匹配Windows路径模式 (盘符:\路径)
-                    pattern = r'[A-Za-z]:[^\s]+'
-                    matches = re.findall(pattern, files)
-                    
-                    if matches:
-                        file_list = matches
-                    elif ' ' in files and not os.path.exists(files):
-                        # 简单空格分割
-                        file_list = files.split()
+                import re
+                # 统一解析混合格式：{带空格路径} 和 不带空格路径 可能同时出现
+                # 例如: {C:\path with space\a.jpg} C:\path\b.jpg
+                parsed = []
+                remaining = files
+                while remaining:
+                    remaining = remaining.strip()
+                    if not remaining:
+                        break
+                    if remaining.startswith('{'):
+                        # 带花括号的路径（含空格）
+                        end = remaining.find('}')
+                        if end != -1:
+                            parsed.append(remaining[1:end])
+                            remaining = remaining[end + 1:]
+                        else:
+                            parsed.append(remaining[1:])
+                            break
                     else:
-                        # 单个文件
-                        file_list = [files]
-            elif isinstance(files, tuple):
-                # 元组格式
-                file_list = list(files)
+                        # 不带花括号：取到下一个空格或结尾
+                        # 但要注意 Windows 路径可能以盘符开头
+                        m = re.match(r'([A-Za-z]:[^\s{]+|[^\s{]+)', remaining)
+                        if m:
+                            parsed.append(m.group(1))
+                            remaining = remaining[m.end():]
+                        else:
+                            break
+                file_list = parsed if parsed else [files]
             else:
                 file_list = [str(files)]
             
@@ -4279,85 +4284,133 @@ class OCRApp:
                 messagebox.showwarning("提示", f"请拖放图片文件！\n\n找到 {len(cleaned_files)} 个文件，但都不是图片格式\n支持格式：JPG, PNG, BMP等")
                 return
             
-            # 单张图片直接选择
             if len(image_files) == 1:
-                self.select_file_internal(image_files[0])
-                self.progress_label.config(text=f"✓ 已通过拖放选择 1 个文件")
-            else:
-                # 多张图片，弹出选项菜单
+                self._show_single_image_drop_options(image_files[0])
+            elif len(image_files) == 2:
                 self._show_multi_image_options(image_files)
+            else:
+                if messagebox.askyesno(
+                    "批量识别",
+                    f"检测到 {len(image_files)} 张图片，将按拖入顺序进行高精度批量识别。\n\n是否开始？"
+                ):
+                    self._start_high_accuracy_recognition(image_files)
         
         except Exception as e:
             print(f"拖放处理错误: {e}")
             import traceback
             traceback.print_exc()
             messagebox.showerror("错误", f"拖放文件失败：{str(e)}")
+
+    def _start_high_accuracy_recognition(self, image_files):
+        """选择图片后启动高精度识别。"""
+        if len(image_files) == 1:
+            self.select_file_internal(image_files[0])
+            self.progress_label.config(text="✓ 已通过拖放选择 1 个文件，准备高精度识别")
+        else:
+            self.batch_select_files_internal(image_files)
+            self.progress_label.config(text=f"✓ 已通过拖放选择 {len(image_files)} 个文件，准备高精度批量识别")
+
+        self.root.after(300, self.perform_ocr)
+
+    def _show_single_image_drop_options(self, image_file):
+        """显示单张图片拖入操作选项。"""
+        option_window = self.create_popup_window(self.root, "选择操作", "single_image_options", 460, 300)
+
+        tk.Label(option_window, text="🖼️ 检测到 1 张图片",
+                font=("Arial", 14, "bold")).pack(pady=18)
+
+        tk.Label(option_window, text=os.path.basename(image_file),
+                fg="blue", font=("Arial", 10), wraplength=400).pack(pady=4)
+
+        tk.Label(option_window, text="请选择操作方式：",
+                font=("Arial", 10)).pack(pady=12)
+
+        btn_frame = tk.Frame(option_window)
+        btn_frame.pack(pady=18)
+
+        def high_accuracy_action():
+            option_window.destroy()
+            self._start_high_accuracy_recognition([image_file])
+
+        def crop_action():
+            option_window.destroy()
+            self._open_crop_window([image_file])
+
+        tk.Button(btn_frame, text="高精度识别", command=high_accuracy_action,
+                  bg="#2196F3", fg="white", padx=24, pady=10,
+                  font=("Arial", 11, "bold")).pack(side=tk.LEFT, padx=8)
+        tk.Button(btn_frame, text="裁剪识别", command=crop_action,
+                  bg="#4CAF50", fg="white", padx=24, pady=10,
+                  font=("Arial", 11, "bold")).pack(side=tk.LEFT, padx=8)
+
+        tk.Button(option_window, text="取消", command=option_window.destroy,
+                  bg="#757575", fg="white", padx=28, pady=8).pack(pady=10)
     
     def _show_multi_image_options(self, image_files):
-        """显示多图片操作选项"""
-        option_window = self.create_popup_window(self.root, "选择操作", "multi_image_options", 500, 400)
+        """显示两张图片拖入操作选项。"""
+        option_window = self.create_popup_window(self.root, "选择操作", "multi_image_options", 500, 480)
         
-        tk.Label(option_window, text="🖼️ 检测到多张图片", 
-                font=("Arial", 14, "bold")).pack(pady=20)
+        tk.Label(option_window, text="🖼️ 检测到 2 张图片", 
+                font=("Arial", 14, "bold")).pack(pady=18)
         
-        tk.Label(option_window, text=f"已拖入 {len(image_files)} 张图片", 
-                fg="blue", font=("Arial", 11)).pack(pady=5)
+        file_preview = "\n".join([f"{i + 1}. {os.path.basename(path)}" for i, path in enumerate(image_files)])
+        tk.Label(option_window, text=file_preview, 
+                fg="blue", font=("Arial", 10), justify=tk.LEFT, wraplength=420).pack(pady=5)
         
         tk.Label(option_window, text="请选择操作方式：", 
-                font=("Arial", 10)).pack(pady=15)
+                font=("Arial", 10)).pack(pady=12)
         
-        # 选项1：批量识别
-        option1_frame = tk.Frame(option_window, relief=tk.RIDGE, borderwidth=2, bg="#E3F2FD")
+        # 选项1：拼接图片
+        option1_frame = tk.Frame(option_window, relief=tk.RIDGE, borderwidth=2, bg="#FFF3E0")
         option1_frame.pack(pady=8, padx=30, fill=tk.X)
         
-        tk.Label(option1_frame, text="1️⃣ 批量识别", 
-                font=("Arial", 12, "bold"), bg="#E3F2FD").pack(pady=8)
-        
-        tk.Label(option1_frame, text="分别识别每张图片，适合处理多个独立文档", 
-                fg="gray", font=("Arial", 9), bg="#E3F2FD").pack(pady=5)
-        
-        def batch_recognize():
-            option_window.destroy()
-            self.batch_select_files_internal(image_files)
-            self.progress_label.config(text=f"✓ 已通过拖放选择 {len(image_files)} 个文件")
-        
-        tk.Button(option1_frame, text="批量识别", command=batch_recognize,
-                 bg="#2196F3", fg="white", padx=20, pady=6, font=("Arial", 10)).pack(pady=8)
-        
-        # 选项2：拼接图片
-        option2_frame = tk.Frame(option_window, relief=tk.RIDGE, borderwidth=2, bg="#FFF3E0")
-        option2_frame.pack(pady=8, padx=30, fill=tk.X)
-        
-        tk.Label(option2_frame, text="2️⃣ 拼接图片", 
+        tk.Label(option1_frame, text="1️⃣ 拼接图片", 
                 font=("Arial", 12, "bold"), bg="#FFF3E0").pack(pady=8)
         
-        tk.Label(option2_frame, text="将多张图片横向拼接成一张，然后识别", 
+        tk.Label(option1_frame, text="将两张图片横向拼接成一张，可在预览中切换方向", 
                 fg="gray", font=("Arial", 9), bg="#FFF3E0").pack(pady=5)
         
         def merge_images_action():
             option_window.destroy()
             self._merge_images_from_drag(image_files)
         
-        tk.Button(option2_frame, text="拼接图片", command=merge_images_action,
+        tk.Button(option1_frame, text="拼接图片", command=merge_images_action,
                  bg="#FF9800", fg="white", padx=20, pady=6, font=("Arial", 10)).pack(pady=8)
         
-        # 选项3：裁剪拼接
+        # 选项2：批量识别
+        option1_frame = tk.Frame(option_window, relief=tk.RIDGE, borderwidth=2, bg="#E3F2FD")
+        option1_frame.pack(pady=8, padx=30, fill=tk.X)
+        
+        tk.Label(option1_frame, text="2️⃣ 批量识别", 
+                font=("Arial", 12, "bold"), bg="#E3F2FD").pack(pady=8)
+        
+        tk.Label(option1_frame, text="按拖入顺序分别识别两张图片", 
+                fg="gray", font=("Arial", 9), bg="#E3F2FD").pack(pady=5)
+        
+        def batch_recognize():
+            option_window.destroy()
+            self._start_high_accuracy_recognition(image_files)
+        
+        tk.Button(option1_frame, text="批量识别", command=batch_recognize,
+                 bg="#2196F3", fg="white", padx=20, pady=6, font=("Arial", 10)).pack(pady=8)
+
+        # 选项3：裁剪识别
         option3_frame = tk.Frame(option_window, relief=tk.RIDGE, borderwidth=2, bg="#E8F5E9")
         option3_frame.pack(pady=8, padx=30, fill=tk.X)
-        
-        tk.Label(option3_frame, text="3️⃣ 裁剪拼接", 
+
+        tk.Label(option3_frame, text="3️⃣ 裁剪识别",
                 font=("Arial", 12, "bold"), bg="#E8F5E9").pack(pady=8)
-        
-        tk.Label(option3_frame, text="手动框选区域后拼接，适合精确裁剪", 
+
+        tk.Label(option3_frame, text="在裁剪窗口中框选区域后进行识别",
                 fg="gray", font=("Arial", 9), bg="#E8F5E9").pack(pady=5)
-        
-        def crop_merge_action():
+
+        def crop_recognize():
             option_window.destroy()
             self._open_crop_window(image_files)
-        
-        tk.Button(option3_frame, text="裁剪拼接", command=crop_merge_action,
+
+        tk.Button(option3_frame, text="裁剪识别", command=crop_recognize,
                  bg="#4CAF50", fg="white", padx=20, pady=6, font=("Arial", 10)).pack(pady=8)
-        
+
         # 取消按钮
         tk.Button(option_window, text="取消", command=option_window.destroy,
                  bg="#757575", fg="white", padx=30, pady=8).pack(pady=15)
@@ -4519,47 +4572,8 @@ class OCRApp:
                     text=f"已选择: 拼接图片 ({len(images)}张) - {total_width}x{max_height}", 
                     fg="blue")
                 
-                # 检查尺寸并启用相应按钮
-                width_in_accurate = self.size_limits["accurate_min_width"] <= total_width <= self.size_limits["accurate_max_width"]
-                height_in_accurate = self.size_limits["accurate_min_height"] <= max_height <= self.size_limits["accurate_max_height"]
-                meets_accurate = width_in_accurate and height_in_accurate
-                
-                width_in_basic = self.size_limits["basic_min_width"] <= total_width <= self.size_limits["basic_max_width"]
-                height_in_basic = self.size_limits["basic_min_height"] <= max_height <= self.size_limits["basic_max_height"]
-                meets_basic = width_in_basic and height_in_basic
-                
-                if meets_accurate:
-                    self.ocr_btn.config(state=tk.NORMAL)
-                else:
-                    self.ocr_btn.config(state=tk.DISABLED)
-                
-                if meets_basic:
-                    self.quick_ocr_btn.config(state=tk.NORMAL)
-                else:
-                    self.quick_ocr_btn.config(state=tk.DISABLED)
-                
-                self.progress_label.config(text="")
-                
-                # 选择识别方式
-                if meets_accurate and meets_basic:
-                    ocr_choice = messagebox.askyesno("选择识别方式",
-                        f"是否使用高精度识别？\n\n"
-                        f"「是」= 高精度识别\n"
-                        f"「否」= 快速识别")
-                    if ocr_choice:
-                        self.root.after(500, self.perform_ocr)
-                    else:
-                        self.root.after(500, self.perform_quick_ocr)
-                elif meets_accurate:
-                    self.root.after(500, self.perform_ocr)
-                elif meets_basic:
-                    self.root.after(500, self.perform_quick_ocr)
-                else:
-                    messagebox.showwarning("警告", 
-                        f"拼接后的图片尺寸不符合任何识别要求\n\n"
-                        f"当前尺寸: {total_width}x{max_height}\n"
-                        f"高精度要求: 宽≥{self.size_limits['accurate_min_width']} 且 高≥{self.size_limits['accurate_min_height']}\n"
-                        f"快速识别要求: 宽<{self.size_limits['basic_max_width']} 且 高<{self.size_limits['basic_max_height']}")
+                # 直接使用高精度识别
+                self.root.after(500, self.perform_ocr)
         
         except Exception as e:
             messagebox.showerror("错误", f"拼接失败：{str(e)}")
@@ -7754,40 +7768,8 @@ class OCRApp:
                         fg="blue"
                     )
                     
-                    # 检查尺寸（宽度和高度都在范围内）
-                    width_in_accurate = self.size_limits["accurate_min_width"] <= total_width <= self.size_limits["accurate_max_width"]
-                    height_in_accurate = self.size_limits["accurate_min_height"] <= max_height <= self.size_limits["accurate_max_height"]
-                    meets_accurate = width_in_accurate and height_in_accurate
-                    
-                    width_in_basic = self.size_limits["basic_min_width"] <= total_width <= self.size_limits["basic_max_width"]
-                    height_in_basic = self.size_limits["basic_min_height"] <= max_height <= self.size_limits["basic_max_height"]
-                    meets_basic = width_in_basic and height_in_basic
-                    
-                    if meets_accurate:
-                        self.ocr_btn.config(state=tk.NORMAL)
-                    else:
-                        self.ocr_btn.config(state=tk.DISABLED)
-                    
-                    if meets_basic:
-                        self.quick_ocr_btn.config(state=tk.NORMAL)
-                    else:
-                        self.quick_ocr_btn.config(state=tk.DISABLED)
-                    
-                    self.progress_label.config(text="")
-                    
-                    if meets_accurate and meets_basic:
-                        result = messagebox.askyesno("选择识别方式",
-                            f"是否使用高精度识别？\n\n"
-                            f"「是」= 高精度识别\n"
-                            f"「否」= 快速识别")
-                        if result:
-                            self.root.after(500, self.perform_ocr)
-                        else:
-                            self.root.after(500, self.perform_quick_ocr)
-                    elif meets_accurate:
-                        self.root.after(500, self.perform_ocr)
-                    elif meets_basic:
-                        self.root.after(500, self.perform_quick_ocr)
+                    # 直接使用通用识别
+                    self.root.after(100, self.perform_general_ocr)
                 
                 except Exception as e:
                     messagebox.showerror("错误", f"裁剪拼接失败：{str(e)}")
