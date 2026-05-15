@@ -10,13 +10,16 @@ import threading
 import json
 from datetime import datetime
 import pandas as pd
-import matplotlib.pyplot as plt
-from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolbar2Tk
-from matplotlib.widgets import LassoSelector
-from matplotlib.path import Path as MplPath
 import re
 import random
-from matplotlib import font_manager
+
+plt = None
+FigureCanvasTkAgg = None
+NavigationToolbar2Tk = None
+LassoSelector = None
+MplPath = None
+font_manager = None
+_matplotlib_loaded = False
 
 # 加载 .env 文件
 env_path = Path(__file__).parent / '.env'
@@ -60,7 +63,27 @@ def configure_styles_force():
         plt.rcParams['font.sans-serif'] = ['Microsoft YaHei', 'SimHei', 'Arial Unicode MS']
 
 
-configure_styles_force()
+def ensure_matplotlib_loaded():
+    """延迟加载 matplotlib，避免拖慢软件首次打开。"""
+    global plt, FigureCanvasTkAgg, NavigationToolbar2Tk, LassoSelector, MplPath, font_manager, _matplotlib_loaded
+    if _matplotlib_loaded:
+        return
+
+    import matplotlib.pyplot as _plt
+    from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg as _FigureCanvasTkAgg
+    from matplotlib.backends.backend_tkagg import NavigationToolbar2Tk as _NavigationToolbar2Tk
+    from matplotlib.widgets import LassoSelector as _LassoSelector
+    from matplotlib.path import Path as _MplPath
+    from matplotlib import font_manager as _font_manager
+
+    plt = _plt
+    FigureCanvasTkAgg = _FigureCanvasTkAgg
+    NavigationToolbar2Tk = _NavigationToolbar2Tk
+    LassoSelector = _LassoSelector
+    MplPath = _MplPath
+    font_manager = _font_manager
+    configure_styles_force()
+    _matplotlib_loaded = True
 
 
 _token_cache = {}
@@ -418,6 +441,10 @@ class OCRApp:
         self.enable_lasso_mode = tk.BooleanVar(value=False)
         self.color_cycle = ['#FF0000', '#00AA00', '#FF8C00', '#9400D3', '#0000FF', '#00CED1']
         self.lasso = None
+        self.plot_initialized = False
+        self.fig = None
+        self.ax = None
+        self.canvas = None
         
         # 创建主界面
         self.setup_main_interface()
@@ -592,7 +619,8 @@ class OCRApp:
         # 初始化各个模块
         self.setup_left_panel()
         self.setup_results_tab()
-        self.setup_plot_tab()
+        self.setup_plot_placeholder()
+        self.classifier_notebook.bind("<<NotebookTabChanged>>", self.on_classifier_tab_changed)
         self.apply_font_style()
 
     def setup_left_panel(self):
@@ -648,7 +676,6 @@ class OCRApp:
         tk.Label(t_bar, text="|").pack(side=tk.LEFT, padx=2)
         tk.Button(t_bar, text="修正", command=self.apply_corrections, bg="#e3f2fd").pack(side=tk.LEFT, padx=2)
         self.create_tooltip(t_bar.winfo_children()[-1], "依次执行：加空格、拆分A组、清理")
-        tk.Button(t_bar, text="↕ 重置顺序", command=self.reset_order_by_y, bg="#f3e5f5").pack(side=tk.LEFT, padx=2)
         tk.Button(t_bar, text="⚙️ 空格/清理设置", command=self.show_space_settings, bg="#f3e5f5").pack(side=tk.LEFT, padx=2)
         tk.Button(t_bar, text="🎨 字体样式", command=self.show_font_style_settings, bg="#e8f5e8").pack(side=tk.LEFT, padx=2)
         
@@ -717,6 +744,11 @@ class OCRApp:
 
     def setup_plot_tab(self):
         """定义绘图标签页内容"""
+        if self.plot_initialized:
+            return
+        ensure_matplotlib_loaded()
+        for widget in self.tab_plt.winfo_children():
+            widget.destroy()
         self.fig, self.ax = plt.subplots(figsize=(6, 6), dpi=100)
         self.canvas = FigureCanvasTkAgg(self.fig, master=self.tab_plt)
         self.canvas.mpl_connect('button_press_event', self.on_plot_click)
@@ -726,24 +758,30 @@ class OCRApp:
         toolbar.update()
 
         self.canvas.get_tk_widget().pack(side=tk.TOP, fill=tk.BOTH, expand=True)
+        self.plot_initialized = True
+        self.update_plot_view()
+
+    def setup_plot_placeholder(self):
+        """创建轻量占位页，首次进入绘图区时再加载 matplotlib。"""
+        placeholder = tk.Frame(self.tab_plt, bg="white")
+        placeholder.pack(fill=tk.BOTH, expand=True)
+        tk.Label(
+            placeholder,
+            text="交互绘图区将在首次打开时加载",
+            bg="white",
+            fg="#666",
+            font=("Microsoft YaHei", 13)
+        ).pack(expand=True)
+
+    def on_classifier_tab_changed(self, event=None):
+        """切换到绘图区时再初始化 matplotlib。"""
+        selected_tab = self.classifier_notebook.select()
+        if selected_tab == str(self.tab_plt) and not self.plot_initialized:
+            self.setup_plot_tab()
 
     # ===============================================
     # 数据分类功能方法
     # ===============================================
-    def reset_order_by_y(self):
-        """按Y坐标重置顺序"""
-        try:
-            if messagebox.askyesno("确认重置", "确定要按Y坐标重新排序吗？\n这将覆盖当前的手动调整顺序。"):
-                # 按Y坐标排序，然后重新分配Order值
-                self.df = self.df.sort_values('Y', ascending=False).reset_index(drop=True)  # Y坐标从大到小
-                self.df['Order'] = range(len(self.df))
-                
-                self.refresh_all()
-                self.show_temp_message("✓ 已按Y坐标重新排序！")
-                messagebox.showinfo("成功", "已按Y坐标重新排序！")
-        except Exception as e:
-            messagebox.showerror("错误", f"重置顺序失败：{str(e)}")
-
     def save_current_order(self):
         """保存当前树视图中的顺序到DataFrame"""
         try:
@@ -1099,6 +1137,8 @@ class OCRApp:
 
     def on_plot_click(self, event):
         """绘图点击事件"""
+        if not self.plot_initialized:
+            return
         if event.inaxes != self.ax: return
         if not self.enable_lasso_mode.get():
             if event.button == 1:
@@ -1112,6 +1152,8 @@ class OCRApp:
 
     def on_lasso_select(self, verts):
         """圈选事件"""
+        if not self.plot_initialized:
+            return
         if self.df.empty: return
         path = MplPath(verts)
         inside = path.contains_points(self.df[['X', 'Y']].values)
@@ -1136,6 +1178,8 @@ class OCRApp:
 
     def update_plot_view(self):
         """更新绘图视图"""
+        if not self.plot_initialized:
+            return
         self.ax.clear();
         self.ax.set_title("绘图交互区")
         if not self.df.empty:
@@ -2512,7 +2556,8 @@ class OCRApp:
                 self.progress_label.config(text="正在刷新显示...")
                 self.root.update_idletasks()
             
-            self.update_plot_view()
+            if self.plot_initialized:
+                self.update_plot_view()
             self.classify_and_display()
             
             # 清除处理提示
@@ -2602,9 +2647,10 @@ class OCRApp:
         self.report_text.delete("1.0", tk.END)
 
         # 清空绘图
-        self.ax.clear()
-        self.ax.set_title("绘图交互区")
-        self.canvas.draw()
+        if self.plot_initialized:
+            self.ax.clear()
+            self.ax.set_title("绘图交互区")
+            self.canvas.draw()
 
         self.show_temp_message("✓ 已清空")
     
