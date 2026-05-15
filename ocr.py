@@ -63,26 +63,37 @@ def configure_styles_force():
 configure_styles_force()
 
 
+_token_cache = {}
+
 def get_access_token(use_basic=False, use_general=False):
     """
-    使用 AK，SK 生成鉴权签名（Access Token）
+    使用 AK，SK 生成鉴权签名（Access Token），带缓存，过期自动刷新
     :param use_basic: 是否使用快速识别的密钥
     :param use_general: 是否使用通用识别的密钥
     :return: access_token，或是None(如果错误)
     """
+    import time
+    cache_key = 'general' if use_general else 'basic' if use_basic else 'accurate'
+    cached = _token_cache.get(cache_key)
+    if cached and cached['expires'] > time.time():
+        return cached['token']
+
     url = "https://aip.baidubce.com/oauth/2.0/token"
-    
     if use_general:
-        # 使用通用识别的密钥
         params = {"grant_type": "client_credentials", "client_id": API_KEY_GENERAL, "client_secret": SECRET_KEY_GENERAL}
     elif use_basic:
-        # 使用快速识别的密钥
         params = {"grant_type": "client_credentials", "client_id": API_KEY_BASIC, "client_secret": SECRET_KEY_BASIC}
     else:
-        # 使用高精度识别的密钥
         params = {"grant_type": "client_credentials", "client_id": API_KEY, "client_secret": SECRET_KEY}
-    
-    return str(requests.post(url, params=params).json().get("access_token"))
+
+    resp = requests.post(url, params=params).json()
+    token = resp.get("access_token")
+    expires_in = resp.get("expires_in", 2592000)  # 百度默认30天
+    _token_cache[cache_key] = {
+        'token': token,
+        'expires': time.time() + expires_in - 300  # 提前5分钟过期
+    }
+    return str(token)
 
 
 def get_file_content_as_base64(path, max_size=8192, max_file_size_mb=3.5):
@@ -615,7 +626,7 @@ class OCRApp:
         # 3. 操作
         op_frame = tk.LabelFrame(self.left_panel, text="3. 全局重置", padx=10, pady=10)
         op_frame.pack(fill=tk.X, pady=10)
-        tk.Button(op_frame, text="🗑️ 清空所有数据及分类", command=self.reset_all, bg="#ffdddd").pack(fill=tk.X)
+        tk.Button(op_frame, text="🗑️ 清空分类目录树和报告", command=self.clear_all_data, bg="#ffdddd").pack(fill=tk.X)
 
     def setup_results_tab(self):
         """设置分类结果标签页"""
@@ -637,13 +648,13 @@ class OCRApp:
         tk.Label(t_bar, text="|").pack(side=tk.LEFT, padx=2)
         tk.Button(t_bar, text="修正", command=self.apply_corrections, bg="#e3f2fd").pack(side=tk.LEFT, padx=2)
         self.create_tooltip(t_bar.winfo_children()[-1], "依次执行：加空格、拆分A组、清理")
-        tk.Button(t_bar, text="�  重置顺序", command=self.reset_order_by_y, bg="#f3e5f5").pack(side=tk.LEFT, padx=2)
+        tk.Button(t_bar, text="↕ 重置顺序", command=self.reset_order_by_y, bg="#f3e5f5").pack(side=tk.LEFT, padx=2)
         tk.Button(t_bar, text="⚙️ 空格/清理设置", command=self.show_space_settings, bg="#f3e5f5").pack(side=tk.LEFT, padx=2)
         tk.Button(t_bar, text="🎨 字体样式", command=self.show_font_style_settings, bg="#e8f5e8").pack(side=tk.LEFT, padx=2)
         
         # 添加功能提示
         tk.Label(t_bar, text="💡", fg="blue", bg="#ddd", font=("Arial", 10)).pack(side=tk.LEFT, padx=5)
-        self.create_tooltip(t_bar.winfo_children()[-1], "右击分类目录的名称或标记列\n可批量将该分类下所有数据改为C组\n\nC组文字显示为深绿色")
+        self.create_tooltip(t_bar.winfo_children()[-1], "右击分类目录可批量改组、查看统计或更改颜色\n右击数据项可对当前选择快速改组\n\nC组文字显示为深绿色")
         
         # 在工具栏右侧添加消息显示区域
         self.message_area = tk.Frame(t_bar, bg="#ddd")
@@ -1022,6 +1033,10 @@ class OCRApp:
             values = self.tree.item(iid, 'values')
             if values and len(values) > 3:
                 idx = int(values[3])
+                old_group = self._get_group_from_values(values)
+                if old_group == group_value:
+                    self.show_temp_message(f"✓ 已是 {group_value}组")
+                    return
                 # 更新DataFrame中的组值
                 self.df.loc[idx, 'Group'] = group_value
                 # 只刷新树，不重绘图表
@@ -1077,8 +1092,9 @@ class OCRApp:
                 self.update_order_from_tree()
                 
                 self.generate_report_from_tree()
-            except:
-                pass
+            except Exception as e:
+                print(f"拖拽排序失败: {e}")
+                self.show_temp_message("拖拽排序失败，请重试")
         self.drag_source_item = None
 
     def on_plot_click(self, event):
@@ -1099,12 +1115,23 @@ class OCRApp:
         if self.df.empty: return
         path = MplPath(verts)
         inside = path.contains_points(self.df[['X', 'Y']].values)
-        new_idx = set(self.df.index[inside].tolist())
+        selected_indices = self.df.index[inside].tolist()
+        new_idx = set(selected_indices)
         if new_idx:
-            for cat in self.category_list: cat['indices'] -= new_idx
+            # 圈选结果：先按 X 从大到小，再按 Y 从小到大
+            ordered_indices = sorted(
+                selected_indices,
+                key=lambda idx: (-self.df.loc[idx, 'X'], self.df.loc[idx, 'Y'])
+            )
+
+            for cat in self.category_list:
+                cat['indices'] -= new_idx
+                if 'ordered_indices' in cat:
+                    cat['ordered_indices'] = [idx for idx in cat['ordered_indices'] if idx not in new_idx]
             cat_id = len(self.category_list) + 1
-            self.category_list.append({'name': f"圈选提取 {cat_id}", 'indices': new_idx,
-                                       'color': self.color_cycle[(cat_id - 1) % len(self.color_cycle)]})
+            self.category_list.insert(0, {'name': f"圈选提取 {cat_id}", 'indices': new_idx,
+                                          'ordered_indices': ordered_indices,
+                                          'color': self.color_cycle[(cat_id - 1) % len(self.color_cycle)]})
             self.refresh_all()
 
     def update_plot_view(self):
@@ -1135,6 +1162,7 @@ class OCRApp:
 
     def classify_and_display(self):
         """分类并显示"""
+        tree_state = self.capture_tree_state()
         for i in self.tree.get_children(): self.tree.delete(i)
         if self.df.empty: return
         
@@ -1148,8 +1176,22 @@ class OCRApp:
             tag = f"tag_{cat['color']}"
             self.tree.tag_configure(tag, foreground=cat['color'], font=("", self.current_font_size, "bold"))
             pid = self.tree.insert("", "end", text=f"📂 {cat['name']}", open=True, tags=(tag,))
-            # 按Order列排序显示，如果没有Order列则按索引排序
-            if 'Order' in self.df.columns:
+            # 圈选分类优先按画圈轨迹顺序显示；旧数据或普通分类按 Order / 索引显示。
+            if cat.get('ordered_indices'):
+                sorted_indices = [
+                    idx for idx in cat['ordered_indices']
+                    if idx in cat['indices'] and idx in self.df.index
+                ]
+                missing_indices = [
+                    idx for idx in cat['indices']
+                    if idx in self.df.index and idx not in sorted_indices
+                ]
+                if 'Order' in self.df.columns:
+                    missing_indices = sorted(missing_indices, key=lambda x: self.df.loc[x, 'Order'])
+                else:
+                    missing_indices = sorted(missing_indices)
+                sorted_indices.extend(missing_indices)
+            elif 'Order' in self.df.columns:
                 sorted_indices = sorted(list(cat['indices']), key=lambda x: self.df.loc[x, 'Order'] if x in self.df.index else float('inf'))
             else:
                 sorted_indices = sorted(list(cat['indices']))
@@ -1197,7 +1239,66 @@ class OCRApp:
                     
                     self.tree.insert(pid, "end", values=(label_text, "☑" if group == 'C' else "☐", group, r_idx),
                                      tags=tuple(item_tags))
+        self.restore_tree_state(tree_state)
         self.generate_report_from_tree()
+
+    def capture_tree_state(self):
+        """记录树的展开、选择和滚动位置，用于刷新后恢复操作上下文。"""
+        state = {'open_categories': {}, 'selected_indices': [], 'focus_index': None, 'yview': None}
+        try:
+            state['yview'] = self.tree.yview()
+            for category_iid in self.tree.get_children(""):
+                category_name = self.tree.item(category_iid, "text").replace("📂 ", "")
+                state['open_categories'][category_name] = self.tree.item(category_iid, "open")
+
+            for iid in self.tree.selection():
+                values = self.tree.item(iid, 'values')
+                if values and len(values) > 3:
+                    state['selected_indices'].append(int(values[3]))
+
+            focus_iid = self.tree.focus()
+            if focus_iid:
+                values = self.tree.item(focus_iid, 'values')
+                if values and len(values) > 3:
+                    state['focus_index'] = int(values[3])
+        except Exception as e:
+            print(f"记录分类树状态失败: {e}")
+        return state
+
+    def restore_tree_state(self, state):
+        """恢复树的展开、选择和滚动位置。"""
+        if not state:
+            return
+        try:
+            index_to_iid = {}
+            for category_iid in self.tree.get_children(""):
+                category_name = self.tree.item(category_iid, "text").replace("📂 ", "")
+                if category_name in state.get('open_categories', {}):
+                    self.tree.item(category_iid, open=state['open_categories'][category_name])
+
+                for child_iid in self.tree.get_children(category_iid):
+                    values = self.tree.item(child_iid, 'values')
+                    if values and len(values) > 3:
+                        index_to_iid[int(values[3])] = child_iid
+
+            selected_iids = [
+                index_to_iid[idx]
+                for idx in state.get('selected_indices', [])
+                if idx in index_to_iid
+            ]
+            if selected_iids:
+                self.tree.selection_set(selected_iids)
+                self.tree.see(selected_iids[0])
+
+            focus_index = state.get('focus_index')
+            if focus_index in index_to_iid:
+                self.tree.focus(index_to_iid[focus_index])
+
+            yview = state.get('yview')
+            if yview:
+                self.tree.yview_moveto(yview[0])
+        except Exception as e:
+            print(f"恢复分类树状态失败: {e}")
     
     def configure_font_style_tags(self):
         """配置字体样式标签"""
@@ -1420,71 +1521,69 @@ class OCRApp:
         self.report_text.configure(font=("Microsoft YaHei", s))
 
     def on_right_click(self, event):
-        """右键点击事件 - 根据点击位置显示不同菜单"""
+        """右键点击事件 - 统一弹菜单，不直接执行操作"""
         iid = self.tree.identify_row(event.y)
-        column = self.tree.identify_column(event.x)
-        
         if not iid:
             return
 
         # 多选支持：如果点击的项目已在选中列表中，不改变选中状态
         if iid not in self.tree.selection():
             self.tree.selection_set(iid)
-        
-        if self.tree.parent(iid):
-            # === 数据项 ===
-            if column == '#3':
-                # 右键点击组列 - 直接改为C
-                self.quick_set_group_to_c(iid)
-                return
 
-            # 右键点击名称列或打勾列 - 显示菜单
-            context_menu = tk.Menu(self.root, tearoff=0)
-            context_menu.add_command(label="⬆️ 向上移动一行",
-                                     command=lambda: self.move_item_up())
-            context_menu.add_command(label="✂️ 拆分A组",
-                                     command=lambda: self.split_group_a_items())
-            context_menu.add_separator()
-            context_menu.add_command(label="➕ 新增",
-                                     command=self.open_add_data_dialog)
-            context_menu.add_command(label="❌ 删除",
-                                     command=self.delete_selected_data)
-            # 选中两行时显示合并选项
+        context_menu = tk.Menu(self.root, tearoff=0)
+
+        if self.tree.parent(iid):
+            # === 数据项菜单 ===
+            current_group = self._get_group_from_values(self.tree.item(iid, 'values'))
+            item_name = self.tree.item(iid, 'values')[0] if self.tree.item(iid, 'values') else ''
             selected = [i for i in self.tree.selection() if self.tree.parent(i)]
+            selected_count = len(selected)
+
+            # 组值快速切换（当前组用 ● 标记）
+            group_menu = tk.Menu(context_menu, tearoff=0)
+            for g in ['A', 'B', 'C']:
+                label = f"● {g}（当前）" if g == current_group else f"   {g}"
+                group_menu.add_command(
+                    label=label,
+                    command=lambda grp=g, clicked=iid: self.set_selected_group_value(clicked, grp)
+                )
+            if selected_count > 1:
+                context_menu.add_cascade(label=f"🏷 改组选中 {selected_count} 项", menu=group_menu)
+            else:
+                context_menu.add_cascade(label=f"🏷 改组（当前：{current_group}）", menu=group_menu)
+            context_menu.add_separator()
+
+            context_menu.add_command(label="⬆️ 上移一行", command=self.move_item_up)
+            context_menu.add_command(label="⬇️ 下移一行", command=self.move_item_down)
+            context_menu.add_separator()
+            context_menu.add_command(label="✂️ 拆分A组（全部）", command=self.split_group_a_items)
+            context_menu.add_separator()
+            context_menu.add_command(label="➕ 新增", command=self.open_add_data_dialog)
+            context_menu.add_command(label="❌ 删除", command=self.delete_selected_data)
+
+            # 选中两行时显示合并选项
             if len(selected) == 2:
                 context_menu.add_separator()
-                context_menu.add_command(label="🔗 合并选中两行",
-                                         command=self.merge_selected_items)
-            try:
-                context_menu.tk_popup(event.x_root, event.y_root)
-            finally:
-                context_menu.grab_release()
-            return
+                context_menu.add_command(label="🔗 合并选中两行", command=self.merge_selected_items)
 
-        # === 分类目录：显示菜单 ===
-        if column == '#1' or column == '#2':
-            # 右键点击名称列或标记列 - 批量改组为C
-            self.batch_set_category_group_to_c(iid)
-            return
-        
-        # 右键点击其他列 - 显示常规菜单
-        context_menu = tk.Menu(self.root, tearoff=0)
-        context_menu.add_command(label="✏️ 重命名分类", 
-                               command=lambda: self.rename_category(iid))
-        context_menu.add_separator()
-        context_menu.add_command(label="📊 查看统计", 
-                               command=lambda: self.show_category_stats(iid))
-        context_menu.add_command(label="🎨 更改颜色", 
-                               command=lambda: self.change_category_color(iid))
-        context_menu.add_separator()
-        context_menu.add_command(label="🔄 批量改组为A", 
-                               command=lambda: self.batch_set_category_group(iid, 'A'))
-        context_menu.add_command(label="🔄 批量改组为B", 
-                               command=lambda: self.batch_set_category_group(iid, 'B'))
-        context_menu.add_command(label="🔄 批量改组为C", 
-                               command=lambda: self.batch_set_category_group(iid, 'C'))
-        
-        # 显示菜单
+        else:
+            # === 分类目录菜单 ===
+            category_name = self.tree.item(iid, "text").replace("📂 ", "")
+            context_menu.add_command(label=f"✏️ 重命名：{category_name}",
+                                     command=lambda: self.rename_category(iid))
+            context_menu.add_separator()
+            context_menu.add_command(label="🔄 批量改组为 A",
+                                     command=lambda: self.batch_set_category_group(iid, 'A'))
+            context_menu.add_command(label="🔄 批量改组为 B",
+                                     command=lambda: self.batch_set_category_group(iid, 'B'))
+            context_menu.add_command(label="🔄 批量改组为 C",
+                                     command=lambda: self.batch_set_category_group(iid, 'C'))
+            context_menu.add_separator()
+            context_menu.add_command(label="📊 查看统计",
+                                     command=lambda: self.show_category_stats(iid))
+            context_menu.add_command(label="🎨 更改颜色",
+                                     command=lambda: self.change_category_color(iid))
+
         try:
             context_menu.tk_popup(event.x_root, event.y_root)
         finally:
@@ -1540,27 +1639,66 @@ class OCRApp:
             
             # 执行批量修改
             changed_count = 0
+            skipped_count = 0
             for item in items_to_change:
                 idx = item['idx']
                 if idx in self.df.index:
+                    if item['current_group'] == target_group:
+                        skipped_count += 1
+                        continue
                     self.df.loc[idx, 'Group'] = target_group
                     changed_count += 1
-            
-            # 刷新显示
-            self.refresh_all()
-            
-            # 显示结果
-            self.show_temp_message(f"✓ 已将 {changed_count} 个项目改为{target_group}组！")
-            messagebox.showinfo("修改完成", 
-                              f"✅ 批量修改完成！\n\n" +
-                              f"📊 修改结果：\n" +
-                              f"• 分类：{category_name}\n" +
-                              f"• 修改项目数：{changed_count} 个\n" +
-                              f"• 新组值：{target_group}\n\n" +
-                              f"💡 提示：所有项目的组值已统一设为{target_group}组")
+
+            # 只刷新树，不重绘图表
+            if changed_count:
+                self.refresh_tree_only()
+                msg = f"✓ 「{category_name}」{changed_count} 个项目 → {target_group}组"
+                if skipped_count:
+                    msg += f"（跳过 {skipped_count} 个）"
+                self.show_temp_message(msg)
+            else:
+                self.show_temp_message(f"✓ 「{category_name}」已全部是 {target_group}组")
             
         except Exception as e:
             messagebox.showerror("错误", f"批量修改组值失败：{str(e)}")
+
+    def set_selected_group_value(self, clicked_iid, group_value):
+        """将当前选中的数据项改为指定组；未多选时只改右键点击项。"""
+        try:
+            selected = [i for i in self.tree.selection() if self.tree.exists(i) and self.tree.parent(i)]
+            target_items = selected if clicked_iid in selected else [clicked_iid]
+            changed_count = 0
+            skipped_count = 0
+
+            for item in target_items:
+                values = self.tree.item(item, 'values')
+                if not values or len(values) <= 3:
+                    continue
+                idx = int(values[3])
+                if idx not in self.df.index:
+                    continue
+                old_group = self._get_group_from_values(values)
+                if old_group == group_value:
+                    skipped_count += 1
+                    continue
+                self.df.loc[idx, 'Group'] = group_value
+                changed_count += 1
+
+            if changed_count:
+                self.refresh_tree_only()
+                if len(target_items) > 1:
+                    msg = f"✓ 已改组 {changed_count} 项 → {group_value}组"
+                    if skipped_count:
+                        msg += f"（跳过 {skipped_count} 项）"
+                    self.show_temp_message(msg)
+                else:
+                    self.show_temp_message(f"✓ 组已更新为：{group_value}")
+            else:
+                self.show_temp_message(f"✓ 选中项已是 {group_value}组")
+
+        except Exception as e:
+            print(f"批量快速设置组值失败: {e}")
+            messagebox.showerror("错误", f"设置组值失败：{str(e)}")
 
     def batch_set_category_group_to_c(self, category_iid):
         """批量将分类下所有数据项的组值设为C（兼容性方法）"""
@@ -2432,10 +2570,43 @@ class OCRApp:
             self.category_list, self.marked_indices = [], set();
             self.refresh_all()
 
-    def reset_all(self):
-        """重置所有"""
-        self.thresholds, self.category_list, self.marked_indices, self.custom_cat_names = [], [], set(), {};
+    def reset_all(self, silent=False):
+        """内部用：重置分类视图（导入数据时调用，不清空数据）"""
+        # 重置分类视图
+        self.thresholds = []
+        self.category_list = []
+        self.marked_indices = set()
+        self.custom_cat_names = {}
+
+        # 恢复组值：按字体样式规则重新推断
+        if not self.df.empty:
+            self.df['Group'] = self.df['Label'].apply(self.get_group_by_text_color)
+
         self.refresh_all()
+
+    def clear_all_data(self):
+        """清空分类目录树和文本报告"""
+        if not messagebox.askyesno("确认清空", "确定要清空分类目录树和文本报告吗？\n此操作不可撤销。"):
+            return
+
+        # 清空数据
+        self.df = pd.DataFrame(columns=['Label', 'Y', 'X', 'Group', 'Order'])
+        self.thresholds = []
+        self.category_list = []
+        self.marked_indices = set()
+        self.custom_cat_names = {}
+
+        # 清空树和报告
+        for i in self.tree.get_children():
+            self.tree.delete(i)
+        self.report_text.delete("1.0", tk.END)
+
+        # 清空绘图
+        self.ax.clear()
+        self.ax.set_title("绘图交互区")
+        self.canvas.draw()
+
+        self.show_temp_message("✓ 已清空")
     
     def add_spaces_to_tree_items(self, silent=False):
         """为分类目录树中的项目名称添加空格。
@@ -3167,8 +3338,8 @@ class OCRApp:
         if data:
             self.df = pd.DataFrame(data, columns=['Label', 'Y', 'X', 'Group'])
             # 添加Order列，初始顺序就是数据的原始顺序
-            self.df['Order'] = range(len(self.df));
-            self.reset_all();
+            self.df['Order'] = range(len(self.df))
+            self.reset_all(silent=True)
             self.main_notebook.select(self.classifier_tab)
             self.classifier_notebook.select(self.tab_plt)
 
@@ -4191,6 +4362,116 @@ class OCRApp:
         tk.Button(option_window, text="取消", command=option_window.destroy,
                  bg="#757575", fg="white", padx=30, pady=8).pack(pady=15)
     
+    def _merge_images_horizontally(self, images, reverse_order=True):
+        """横向拼接图片，reverse_order=True 时后面的图片排在左边。"""
+        total_width = sum(img.width for img in images)
+        max_height = max(img.height for img in images)
+        merged_image = Image.new('RGB', (total_width, max_height), 'white')
+
+        x_offset = 0
+        ordered_images = reversed(images) if reverse_order else images
+        for img in ordered_images:
+            y_offset = (max_height - img.height) // 2
+            merged_image.paste(img, (x_offset, y_offset))
+            x_offset += img.width
+
+        return merged_image, total_width, max_height
+
+    def _show_merged_image_preview(self, images, item_label="图片数量", item_action="选择"):
+        """显示拼接结果预览，可切换方向，并返回 choice, merged_image, width, height。"""
+        from PIL import ImageTk
+
+        item_count = len(images)
+        reverse_order = [True]
+        merged_image, total_width, max_height = self._merge_images_horizontally(
+            images, reverse_order[0]
+        )
+
+        preview_dialog = tk.Toplevel(self.root)
+        preview_dialog.title("拼接预览")
+        preview_dialog.transient(self.root)
+        preview_dialog.grab_set()
+
+        screen_w = preview_dialog.winfo_screenwidth()
+        screen_h = preview_dialog.winfo_screenheight()
+        max_preview_w = int(screen_w * 0.8)
+        max_preview_h = int(screen_h * 0.6)
+
+        scale = min(max_preview_w / total_width, max_preview_h / max_height, 1.0)
+        preview_w = max(1, int(total_width * scale))
+        preview_h = max(1, int(max_height * scale))
+
+        win_w = max(preview_w + 40, 720)
+        win_h = preview_h + 190
+        x = (screen_w - win_w) // 2
+        y = (screen_h - win_h) // 2
+        preview_dialog.geometry(f"{win_w}x{win_h}+{x}+{y}")
+        preview_dialog.minsize(720, 320)
+
+        tk.Label(preview_dialog, text="拼接预览",
+                 font=("Microsoft YaHei", 13, "bold")).pack(pady=(12, 4))
+
+        info_label = tk.Label(preview_dialog,
+                              text=f"{item_label}: {item_count}  |  尺寸: {total_width}x{max_height}",
+                              fg="gray", font=("Microsoft YaHei", 9))
+        info_label.pack()
+
+        order_label = tk.Label(preview_dialog, fg="#E65100", font=("Microsoft YaHei", 9))
+        order_label.pack(pady=(4, 0))
+
+        img_label = tk.Label(preview_dialog, relief=tk.SUNKEN, bd=1)
+        img_label.pack(pady=10, padx=20)
+
+        user_choice = [None]
+        selected_merged_image = [merged_image]
+
+        def update_preview():
+            merged, _, _ = self._merge_images_horizontally(images, reverse_order[0])
+            selected_merged_image[0] = merged
+            preview_img = merged.resize((preview_w, preview_h), Image.Resampling.LANCZOS)
+            photo = ImageTk.PhotoImage(preview_img)
+            img_label.config(image=photo)
+            img_label.image = photo
+
+            if reverse_order[0]:
+                order_text = f"当前：反向拼接，后{item_action}的内容显示在左边，先{item_action}的内容显示在右边。"
+                switch_text = "切换为正向拼接"
+            else:
+                order_text = f"当前：正向拼接，先{item_action}的内容显示在左边，后{item_action}的内容显示在右边。"
+                switch_text = "切换为反向拼接"
+            order_label.config(text=order_text)
+            switch_btn.config(text=switch_text)
+
+        def switch_direction():
+            reverse_order[0] = not reverse_order[0]
+            update_preview()
+
+        def choose(choice):
+            user_choice[0] = choice
+            preview_dialog.destroy()
+
+        btn_frame = tk.Frame(preview_dialog)
+        btn_frame.pack(pady=10)
+
+        switch_btn = tk.Button(btn_frame, text="切换为正向拼接", command=switch_direction,
+                               bg="#FF9800", fg="white", font=("Microsoft YaHei", 10),
+                               padx=18, pady=8)
+        switch_btn.pack(side=tk.LEFT, padx=6)
+        tk.Button(btn_frame, text="💾 保存并识别", command=lambda: choose('save'),
+                  bg="#4CAF50", fg="white", font=("Microsoft YaHei", 10),
+                  padx=18, pady=8).pack(side=tk.LEFT, padx=6)
+        tk.Button(btn_frame, text="🔍 直接识别", command=lambda: choose('no_save'),
+                  bg="#2196F3", fg="white", font=("Microsoft YaHei", 10),
+                  padx=18, pady=8).pack(side=tk.LEFT, padx=6)
+        tk.Button(btn_frame, text="取消", command=lambda: choose('cancel'),
+                  bg="#757575", fg="white", font=("Microsoft YaHei", 10),
+                  padx=18, pady=8).pack(side=tk.LEFT, padx=6)
+
+        preview_dialog.protocol("WM_DELETE_WINDOW", lambda: choose('cancel'))
+        update_preview()
+        self.root.wait_window(preview_dialog)
+        return user_choice[0] or 'cancel', selected_merged_image[0], total_width, max_height
+
     def _merge_images_from_drag(self, file_paths):
         """从拖放触发的拼接图片功能"""
         try:
@@ -4200,32 +4481,11 @@ class OCRApp:
                 img = Image.open(path)
                 images.append(img)
             
-            # 计算拼接后的尺寸
-            total_width = sum(img.width for img in images)
-            max_height = max(img.height for img in images)
-            
-            # 创建拼接图片（从右到左）
-            merged_image = Image.new('RGB', (total_width, max_height), 'white')
-            
-            x_offset = 0
-            for img in reversed(images):
-                y_offset = (max_height - img.height) // 2
-                merged_image.paste(img, (x_offset, y_offset))
-                x_offset += img.width
-            
-            # 询问是否保存
-            save_choice = messagebox.askyesnocancel(
-                "拼接完成",
-                f"拼接完成！\n\n"
-                f"图片数量: {len(images)}\n"
-                f"拼接尺寸: {total_width}x{max_height}\n\n"
-                f"是否保存拼接后的图片？\n\n"
-                f"「是」= 保存图片并识别\n"
-                f"「否」= 只识别不保存\n"
-                f"「取消」= 取消操作"
+            preview_choice, merged_image, total_width, max_height = self._show_merged_image_preview(
+                images, item_label="图片数量", item_action="选择"
             )
-            
-            if save_choice is None:  # 取消
+
+            if preview_choice == 'cancel':
                 return
             
             # 保存到临时文件
@@ -4235,7 +4495,7 @@ class OCRApp:
             merged_image.save(temp_path, format='JPEG', quality=90)
             
             # 如果选择保存
-            if save_choice:
+            if preview_choice == 'save':
                 save_path = filedialog.asksaveasfilename(
                     defaultextension=".jpg",
                     filetypes=[("JPEG图片", "*.jpg"), ("PNG图片", "*.png"), ("所有文件", "*.*")],
@@ -4253,11 +4513,7 @@ class OCRApp:
                     temp_path = save_path
             
             # 继续识别流程
-            result = messagebox.askyesno("开始识别", 
-                f"是否立即识别拼接后的图片？\n\n"
-                f"拼接尺寸: {total_width}x{max_height}")
-            
-            if result:
+            if preview_choice in ('save', 'no_save'):
                 self.image_paths = [temp_path]
                 self.file_label.config(
                     text=f"已选择: 拼接图片 ({len(images)}张) - {total_width}x{max_height}", 
@@ -6884,33 +7140,11 @@ class OCRApp:
                 img = Image.open(path)
                 images.append(img)
             
-            # 计算拼接后的尺寸
-            total_width = sum(img.width for img in images)
-            max_height = max(img.height for img in images)
-            
-            # 创建拼接图片
-            merged_image = Image.new('RGB', (total_width, max_height), 'white')
-            
-            # 从右到左拼接（默认）
-            x_offset = 0
-            for img in reversed(images):
-                y_offset = (max_height - img.height) // 2
-                merged_image.paste(img, (x_offset, y_offset))
-                x_offset += img.width
-            
-            # 询问是否保存
-            save_choice = messagebox.askyesnocancel(
-                "拼接完成",
-                f"拼接完成！\n\n"
-                f"图片数量: {len(images)}\n"
-                f"拼接尺寸: {total_width}x{max_height}\n\n"
-                f"是否保存拼接后的图片？\n\n"
-                f"「是」= 保存图片并识别\n"
-                f"「否」= 只识别不保存\n"
-                f"「取消」= 取消操作"
+            preview_choice, merged_image, total_width, max_height = self._show_merged_image_preview(
+                images, item_label="图片数量", item_action="选择"
             )
-            
-            if save_choice is None:  # 取消
+
+            if preview_choice == 'cancel':
                 return
             
             # 保存到临时文件（用于识别）
@@ -6920,7 +7154,7 @@ class OCRApp:
             merged_image.save(temp_path, format='JPEG', quality=90)
             
             # 如果选择保存
-            if save_choice:
+            if preview_choice == 'save':
                 save_path = filedialog.asksaveasfilename(
                     defaultextension=".jpg",
                     filetypes=[("JPEG图片", "*.jpg"), ("PNG图片", "*.png"), ("所有文件", "*.*")],
@@ -6941,11 +7175,7 @@ class OCRApp:
                     temp_path = save_path
             
             # 继续识别流程
-            result = messagebox.askyesno("开始识别", 
-                f"是否立即识别拼接后的图片？\n\n"
-                f"拼接尺寸: {total_width}x{max_height}")
-            
-            if result:
+            if preview_choice in ('save', 'no_save'):
                 self.image_paths = [temp_path]
                 self.file_label.config(
                     text=f"已选择: 拼接图片 ({len(images)}张) - {total_width}x{max_height}", 
@@ -7468,88 +7698,23 @@ class OCRApp:
                             f"超出: {total_width - 8100}px")
                         return
                     
-                    # 根据默认方向拼接图片（从右到左）
-                    merged = Image.new('RGB', (total_width, max_height), 'white')
+                    crop_window.destroy()
+
+                    user_choice, merged, total_width, max_height = self._show_merged_image_preview(
+                        cropped_images, item_label="区域数量", item_action="框选"
+                    )
                     
-                    # 从右到左拼接（默认）
-                    x_offset = 0
-                    for i, img in enumerate(reversed(cropped_images)):
-                        y_offset = (max_height - img.height) // 2
-                        merged.paste(img, (x_offset, y_offset))
-                        x_offset += img.width
-                    
+                    if user_choice == 'cancel':
+                        # 用户取消操作
+                        return
+
                     import tempfile
                     temp_dir = tempfile.gettempdir()
                     temp_path = os.path.join(temp_dir, "cropped_merged_ocr.jpg")
                     merged.save(temp_path, format='JPEG', quality=90)
                     
-                    crop_window.destroy()
-                    
-                    # 询问是否保存拼接图片
-                    from tkinter import simpledialog
-                    
-                    save_dialog = tk.Toplevel(self.root)
-                    save_dialog.title("保存选项")
-                    save_dialog.geometry("500x300")
-                    save_dialog.minsize(500, 300)  # 设置最小尺寸
-                    save_dialog.transient(self.root)
-                    save_dialog.grab_set()
-                    
-                    # 居中显示
-                    save_dialog.update_idletasks()
-                    x = (save_dialog.winfo_screenwidth() // 2) - (500 // 2)
-                    y = (save_dialog.winfo_screenheight() // 2) - (300 // 2)
-                    save_dialog.geometry(f"500x300+{x}+{y}")
-                    
-                    user_choice = [None]  # 用列表存储选择结果
-                    
-                    tk.Label(save_dialog, text="拼接完成！", 
-                            font=("Arial", 14, "bold")).pack(pady=15)
-                    
-                    info_text = f"区域数量: {len(cropped_images)}\n"
-                    info_text += f"拼接尺寸: 宽{total_width} x 高{max_height}"
-                    tk.Label(save_dialog, text=info_text, 
-                            font=("Arial", 11)).pack(pady=10)
-                    
-                    tk.Label(save_dialog, text="是否保存拼接后的图片？", 
-                            font=("Arial", 11, "bold")).pack(pady=10)
-                    
-                    def on_yes():
-                        user_choice[0] = 'save'
-                        save_dialog.destroy()
-                    
-                    def on_no():
-                        user_choice[0] = 'no_save'
-                        save_dialog.destroy()
-                    
-                    def on_cancel():
-                        user_choice[0] = 'cancel'
-                        save_dialog.destroy()
-                    
-                    btn_frame = tk.Frame(save_dialog)
-                    btn_frame.pack(pady=20)
-                    
-                    tk.Button(btn_frame, text="是 - 保存并识别", command=on_yes,
-                             bg="#4CAF50", fg="white", font=("Arial", 11),
-                             padx=20, pady=10).pack(side=tk.LEFT, padx=5)
-                    
-                    tk.Button(btn_frame, text="否 - 只识别不保存", command=on_no,
-                             bg="#2196F3", fg="white", font=("Arial", 11),
-                             padx=20, pady=10).pack(side=tk.LEFT, padx=5)
-                    
-                    tk.Button(btn_frame, text="取消", command=on_cancel,
-                             bg="#757575", fg="white", font=("Arial", 11),
-                             padx=20, pady=10).pack(side=tk.LEFT, padx=5)
-                    
-                    # 等待用户选择
-                    self.root.wait_window(save_dialog)
-                    
-                    if user_choice[0] == 'cancel':
-                        # 用户取消操作
-                        return
-                    
                     # 如果选择保存
-                    if user_choice[0] == 'save':
+                    if user_choice == 'save':
                         save_path = filedialog.asksaveasfilename(
                             defaultextension=".jpg",
                             filetypes=[
@@ -7578,7 +7743,7 @@ class OCRApp:
                     self.result_text.delete(1.0, tk.END)
                     self.result_text.insert(tk.END, f"✓ 已裁剪 {len(cropped_images)} 个区域并拼接\n")
                     self.result_text.insert(tk.END, f"✓ 拼接尺寸: 宽{total_width} x 高{max_height}\n")
-                    if user_choice[0] == 'save':
+                    if user_choice == 'save':
                         self.result_text.insert(tk.END, "="*80 + "\n")
                         self.result_text.insert(tk.END, f"✓ 图片已保存\n")
                     self.result_text.insert(tk.END, "正在识别拼接后的图片，请稍候...\n\n")
