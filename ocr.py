@@ -1,4 +1,4 @@
-﻿import requests
+import requests
 import os
 import base64
 import tkinter as tk
@@ -12,6 +12,7 @@ from datetime import datetime
 import pandas as pd
 import re
 import random
+import copy
 
 plt = None
 FigureCanvasTkAgg = None
@@ -438,6 +439,10 @@ class OCRApp:
         self.marked_indices = set()
         self.custom_cat_names = {}
         self.drag_source_item = None
+        self.drag_source_index = None
+        self.drag_indicator = None
+        self.undo_stack = []
+        self.undo_limit = 30
         self.enable_lasso_mode = tk.BooleanVar(value=False)
         self.color_cycle = ['#FF0000', '#00AA00', '#FF8C00', '#9400D3', '#0000FF', '#00CED1']
         self.lasso = None
@@ -524,10 +529,23 @@ class OCRApp:
         self.api_key_btn = self._create_ribbon_button(settings_group, "🔑\n密钥", self.show_api_key_settings, "#673AB7")
         self.unlock_btn = self._create_ribbon_button(settings_group, "🔓\n解锁", self.unlock_size_limit, "#E91E63")
         
-        # 文件路径标签
-        self.file_label = tk.Label(self.ocr_tab, text="未选择文件", fg="gray", wraplength=1350, bg="#fafafa", 
-                                   pady=8, font=("Arial", 9))
-        self.file_label.pack(fill=tk.X, padx=10, pady=(5, 0))
+        # 拖拽选择区
+        self.drop_zone = tk.Frame(self.ocr_tab, bg="#EAF4FF", relief=tk.GROOVE, bd=2, cursor="hand2")
+        self.drop_zone.pack(fill=tk.X, padx=10, pady=(8, 0))
+
+        self.file_label = tk.Label(
+            self.drop_zone,
+            text="未选择文件 | 拖入图片到这里，或点击选择图片",
+            fg="#1E5A8A",
+            wraplength=1350,
+            bg="#EAF4FF",
+            pady=12,
+            font=("Microsoft YaHei", 10, "bold"),
+            cursor="hand2"
+        )
+        self.file_label.pack(fill=tk.X, padx=8)
+        self.drop_zone.bind("<Button-1>", lambda event: self.select_file())
+        self.file_label.bind("<Button-1>", lambda event: self.select_file())
         
         # 进度条
         self.progress_frame = tk.Frame(self.ocr_tab)
@@ -673,6 +691,8 @@ class OCRApp:
         tk.Label(t_bar, text="|").pack(side=tk.LEFT, padx=2)
         tk.Button(t_bar, text="↑ 上移", command=self.move_item_up).pack(side=tk.LEFT, padx=2)
         tk.Button(t_bar, text="↓ 下移", command=self.move_item_down).pack(side=tk.LEFT, padx=2)
+        self.undo_btn = tk.Button(t_bar, text="↶ 撤销", command=self.undo_classifier_action, state=tk.DISABLED)
+        self.undo_btn.pack(side=tk.LEFT, padx=2)
         tk.Label(t_bar, text="|").pack(side=tk.LEFT, padx=2)
         tk.Button(t_bar, text="修正", command=self.apply_corrections, bg="#e3f2fd").pack(side=tk.LEFT, padx=2)
         self.create_tooltip(t_bar.winfo_children()[-1], "依次执行：加空格、拆分A组、清理")
@@ -691,7 +711,7 @@ class OCRApp:
                                  displaycolumns=('Label', 'Status', 'Group'))
         self.tree.heading('#0', text='分类目录');
         self.tree.heading('Label', text='名称');
-        self.tree.heading('Status', text='☑')
+        self.tree.heading('Status', text='C组')
         self.tree.heading('Group', text='组')
         self.tree.column('Index', width=0, stretch=False)
         
@@ -782,6 +802,52 @@ class OCRApp:
     # ===============================================
     # 数据分类功能方法
     # ===============================================
+    def _create_classifier_snapshot(self):
+        """创建分类树可撤销状态快照。"""
+        return {
+            'df': self.df.copy(deep=True),
+            'category_list': copy.deepcopy(self.category_list),
+            'marked_indices': set(self.marked_indices),
+            'thresholds': list(self.thresholds),
+            'custom_cat_names': copy.deepcopy(self.custom_cat_names)
+        }
+
+    def push_undo_snapshot(self, action_name="操作"):
+        """保存一次分类树操作前的状态。"""
+        try:
+            snapshot = self._create_classifier_snapshot()
+            snapshot['action_name'] = action_name
+            self.undo_stack.append(snapshot)
+            if len(self.undo_stack) > self.undo_limit:
+                self.undo_stack.pop(0)
+            self.update_undo_button_state()
+        except Exception as e:
+            print(f"保存撤销快照失败: {e}")
+
+    def update_undo_button_state(self):
+        """刷新撤销按钮可用状态。"""
+        if hasattr(self, 'undo_btn'):
+            self.undo_btn.config(state=tk.NORMAL if self.undo_stack else tk.DISABLED)
+
+    def undo_classifier_action(self):
+        """撤销上一次分类树修改。"""
+        if not self.undo_stack:
+            self.show_temp_message("没有可撤销的操作")
+            return
+
+        try:
+            snapshot = self.undo_stack.pop()
+            self.df = snapshot['df'].copy(deep=True)
+            self.category_list = copy.deepcopy(snapshot['category_list'])
+            self.marked_indices = set(snapshot['marked_indices'])
+            self.thresholds = list(snapshot['thresholds'])
+            self.custom_cat_names = copy.deepcopy(snapshot['custom_cat_names'])
+            self.update_undo_button_state()
+            self.refresh_all()
+            self.show_temp_message(f"↶ 已撤销：{snapshot.get('action_name', '上一步操作')}")
+        except Exception as e:
+            messagebox.showerror("错误", f"撤销失败：{str(e)}")
+
     def save_current_order(self):
         """保存当前树视图中的顺序到DataFrame"""
         try:
@@ -798,20 +864,55 @@ class OCRApp:
             messagebox.showerror("错误", f"保存顺序失败：{str(e)}")
 
     def reorder_dataframe(self):
-        """重新整理DataFrame的Order列，确保顺序连续"""
+        """Rebuild the Order column while preserving the intended row order."""
         if 'Order' not in self.df.columns:
             self.df['Order'] = range(len(self.df))
         else:
-            # 按Order列排序，然后重新分配连续的Order值
             self.df = self.df.sort_values('Order').reset_index(drop=True)
             self.df['Order'] = range(len(self.df))
+
+    def _shift_category_indices_after_insert(self, insert_pos, count=1):
+        """Keep lasso categories aligned after inserting rows into df."""
+        def shift_idx(idx):
+            return idx + count if idx >= insert_pos else idx
+
+        for cat in self.category_list:
+            cat['indices'] = {shift_idx(idx) for idx in cat.get('indices', set())}
+            if cat.get('ordered_indices') is not None:
+                cat['ordered_indices'] = [shift_idx(idx) for idx in cat['ordered_indices']]
+        self.marked_indices = {shift_idx(idx) for idx in self.marked_indices}
+
+    def _shift_category_indices_after_delete(self, deleted_indices):
+        """Keep lasso categories aligned after deleting rows from df."""
+        deleted = set(deleted_indices)
+        if not deleted:
+            return
+
+        deleted_sorted = sorted(deleted)
+
+        def map_idx(idx):
+            if idx in deleted:
+                return None
+            shift = sum(1 for deleted_idx in deleted_sorted if deleted_idx < idx)
+            return idx - shift
+
+        for cat in self.category_list:
+            remapped = [map_idx(idx) for idx in cat.get('indices', set())]
+            cat['indices'] = {idx for idx in remapped if idx is not None}
+            if cat.get('ordered_indices') is not None:
+                ordered = [map_idx(idx) for idx in cat['ordered_indices']]
+                cat['ordered_indices'] = [idx for idx in ordered if idx is not None]
+
+        marked = [map_idx(idx) for idx in self.marked_indices]
+        self.marked_indices = {idx for idx in marked if idx is not None}
 
     def move_item_up(self):
         """上移项目"""
         selected = self.tree.selection()
         if not selected:
             return
-            
+
+        undo_snapshot = self._create_classifier_snapshot()
         moved_items = []
         for item in selected:
             parent = self.tree.parent(item)
@@ -828,6 +929,11 @@ class OCRApp:
         
         # 更新DataFrame中的Order
         if moved_items:
+            undo_snapshot['action_name'] = "上移项目"
+            self.undo_stack.append(undo_snapshot)
+            if len(self.undo_stack) > self.undo_limit:
+                self.undo_stack.pop(0)
+            self.update_undo_button_state()
             self.update_order_from_tree()
         
         self.generate_report_from_tree()
@@ -837,7 +943,8 @@ class OCRApp:
         selected = list(reversed(self.tree.selection()))
         if not selected:
             return
-            
+
+        undo_snapshot = self._create_classifier_snapshot()
         moved_items = []
         for item in selected:
             parent = self.tree.parent(item)
@@ -855,6 +962,11 @@ class OCRApp:
         
         # 更新DataFrame中的Order
         if moved_items:
+            undo_snapshot['action_name'] = "下移项目"
+            self.undo_stack.append(undo_snapshot)
+            if len(self.undo_stack) > self.undo_limit:
+                self.undo_stack.pop(0)
+            self.update_undo_button_state()
             self.update_order_from_tree()
         
         self.generate_report_from_tree()
@@ -958,6 +1070,7 @@ class OCRApp:
                 y_val = float(y_ent.get())
                 x_val = float(x_ent.get())
                 group_val = group_combo.get()
+                self.push_undo_snapshot("新增数据")
                 
                 # 计算新的Order值
                 if insert_pos == 0:
@@ -969,14 +1082,46 @@ class OCRApp:
                     prev_order = self.df.iloc[insert_pos-1]['Order'] if insert_pos > 0 else -1
                     next_order = self.df.iloc[insert_pos]['Order'] if insert_pos < len(self.df) else len(self.df)
                     new_order = (prev_order + next_order) / 2
-                
-                row = pd.DataFrame([[name, y_val, x_val, group_val, new_order]], columns=['Label', 'Y', 'X', 'Group', 'Order'])
+
+                # 检测选中条目是否属于某个圈选分类
+                lasso_tag = ''
+                parent_cat = None
+                if selected and self.tree.parent(selected[0]):
+                    vals = self.tree.item(selected[0], 'values')
+                    if len(vals) > 3:
+                        row_idx = int(vals[3])
+                        if 'LassoTag' in self.df.columns and row_idx in self.df.index:
+                            lasso_tag = self.df.loc[row_idx, 'LassoTag']
+                            if lasso_tag:
+                                for cat in self.category_list:
+                                    if cat['name'] == lasso_tag:
+                                        parent_cat = cat
+                                        break
+
+                row_data = {'Label': name, 'Y': y_val, 'X': x_val, 'Group': group_val, 'Order': new_order}
+                if 'LassoTag' in self.df.columns:
+                    row_data['LassoTag'] = lasso_tag
+                row = pd.DataFrame([row_data])
                 self.df = pd.concat([self.df.iloc[:insert_pos], row, self.df.iloc[insert_pos:]]).reset_index(drop=True)
                 
                 # 重新整理Order列，确保顺序正确
                 self.reorder_dataframe()
                 
-                self.category_list, self.marked_indices = [], set()
+                self._shift_category_indices_after_insert(insert_pos)
+
+                # 如果新条目属于圈选分类，把新索引加入该分类
+                if parent_cat is not None:
+                    new_idx = insert_pos  # reset_index 后新行就在 insert_pos
+                    parent_cat['indices'].add(new_idx)
+                    if parent_cat.get('ordered_indices') is not None:
+                        # 插入到选中条目的后面
+                        ref_idx = int(self.tree.item(selected[0], 'values')[3])
+                        try:
+                            pos = parent_cat['ordered_indices'].index(ref_idx)
+                            parent_cat['ordered_indices'].insert(pos + 1, new_idx)
+                        except ValueError:
+                            parent_cat['ordered_indices'].append(new_idx)
+
                 self.refresh_all()
                 dialog.destroy()
             except ValueError:
@@ -1000,6 +1145,8 @@ class OCRApp:
 
     def on_drag_start(self, event):
         """开始拖拽或处理特殊列点击"""
+        self.drag_source_item = None
+        self.drag_source_index = None
         item = self.tree.identify_row(event.y)
         column = self.tree.identify_column(event.x)
 
@@ -1016,6 +1163,13 @@ class OCRApp:
         # 正常的拖拽逻辑
         if item and self.tree.parent(item):
             self.drag_source_item = item
+            values = self.tree.item(item, 'values')
+            if values and len(values) > 3:
+                try:
+                    self.drag_source_index = int(values[3])
+                except (TypeError, ValueError):
+                    self.drag_source_index = None
+            self.tree.configure(cursor="hand2")
     
     def show_group_dropdown(self, iid, event):
         """显示组选择下拉菜单（Excel内嵌Combobox风格）"""
@@ -1075,6 +1229,7 @@ class OCRApp:
                 if old_group == group_value:
                     self.show_temp_message(f"✓ 已是 {group_value}组")
                     return
+                self.push_undo_snapshot("修改组值")
                 # 更新DataFrame中的组值
                 self.df.loc[idx, 'Group'] = group_value
                 # 只刷新树，不重绘图表
@@ -1105,6 +1260,10 @@ class OCRApp:
                     new_group = 'B'
             else:
                 new_group = 'C'
+            if current_group == new_group:
+                self.show_temp_message(f"✓ 已是 {new_group}组")
+                return
+            self.push_undo_snapshot("切换C组")
             self.df.loc[idx, 'Group'] = new_group
             self.refresh_tree_only()
         except Exception as e:
@@ -1112,19 +1271,94 @@ class OCRApp:
 
     def on_drag_motion(self, event):
         """拖拽中"""
+        if event.y < 24:
+            self.tree.yview_scroll(-1, "units")
+        elif event.y > self.tree.winfo_height() - 24:
+            self.tree.yview_scroll(1, "units")
+
         target = self.tree.identify_row(event.y)
-        if target: self.tree.selection_set(target)
+        if target:
+            self.show_drag_indicator(target, event.y)
+
+    def show_drag_indicator(self, target, pointer_y):
+        """显示拖拽插入位置指示线。"""
+        try:
+            bbox = self.tree.bbox(target)
+            if not bbox:
+                self.hide_drag_indicator()
+                return
+
+            x, y, width, height = bbox
+            line_y = y + height if pointer_y > y + height / 2 else y
+
+            if self.drag_indicator is None or not self.drag_indicator.winfo_exists():
+                self.drag_indicator = tk.Frame(self.tree, bg="#1976D2", height=2)
+
+            self.drag_indicator.place(x=0, y=line_y, relwidth=1.0, height=2)
+            self.drag_indicator.lift()
+        except Exception as e:
+            print(f"显示拖拽指示线失败: {e}")
+
+    def hide_drag_indicator(self):
+        """隐藏拖拽插入位置指示线。"""
+        try:
+            if self.drag_indicator is not None and self.drag_indicator.winfo_exists():
+                self.drag_indicator.place_forget()
+        except Exception:
+            pass
+
+    def find_tree_item_by_df_index(self, df_index):
+        """Find the current Treeview item for a DataFrame row index."""
+        if df_index is None:
+            return None
+        for category_item in self.tree.get_children(""):
+            for data_item in self.tree.get_children(category_item):
+                values = self.tree.item(data_item, 'values')
+                if values and len(values) > 3:
+                    try:
+                        if int(values[3]) == df_index:
+                            return data_item
+                    except (TypeError, ValueError):
+                        continue
+        return None
 
     def on_drag_release(self, event):
         """结束拖拽"""
         if not self.drag_source_item: 
+            self.hide_drag_indicator()
+            self.tree.configure(cursor="")
             return
             
         target = self.tree.identify_row(event.y)
-        if target and target != self.drag_source_item:
-            dest_p = self.tree.parent(target) or target
+        source_item = self.drag_source_item
+        if not self.tree.exists(source_item):
+            source_item = self.find_tree_item_by_df_index(self.drag_source_index)
+
+        if not source_item:
+            self.drag_source_item = None
+            self.drag_source_index = None
+            self.hide_drag_indicator()
+            self.tree.configure(cursor="")
+            return
+
+        if target and target != source_item:
             try:
-                self.tree.move(self.drag_source_item, dest_p, self.tree.index(target))
+                self.push_undo_snapshot("拖拽排序")
+                target_parent = self.tree.parent(target)
+                if target_parent:
+                    dest_p = target_parent
+                    bbox = self.tree.bbox(target)
+                    insert_index = self.tree.index(target)
+                    if bbox and event.y > bbox[1] + bbox[3] / 2:
+                        insert_index += 1
+                else:
+                    dest_p = target
+                    insert_index = len(self.tree.get_children(target))
+
+                self.tree.move(source_item, dest_p, insert_index)
+                self.tree.selection_set(source_item)
+                self.tree.focus(source_item)
+                self.tree.see(source_item)
                 
                 # 更新DataFrame中的Order
                 self.update_order_from_tree()
@@ -1134,6 +1368,9 @@ class OCRApp:
                 print(f"拖拽排序失败: {e}")
                 self.show_temp_message("拖拽排序失败，请重试")
         self.drag_source_item = None
+        self.drag_source_index = None
+        self.hide_drag_indicator()
+        self.tree.configure(cursor="")
 
     def on_plot_click(self, event):
         """绘图点击事件"""
@@ -1166,12 +1403,26 @@ class OCRApp:
                 key=lambda idx: (-self.df.loc[idx, 'X'], self.df.loc[idx, 'Y'])
             )
 
+            cat_id = len(self.category_list) + 1
+            cat_name = f"圈选提取 {cat_id}"
+
+            # 从其他分类移走这些索引，并清除旧 LassoTag
             for cat in self.category_list:
+                removed = cat['indices'] & new_idx
                 cat['indices'] -= new_idx
                 if 'ordered_indices' in cat:
                     cat['ordered_indices'] = [idx for idx in cat['ordered_indices'] if idx not in new_idx]
-            cat_id = len(self.category_list) + 1
-            self.category_list.insert(0, {'name': f"圈选提取 {cat_id}", 'indices': new_idx,
+                if removed:
+                    self.df.loc[list(removed), 'LassoTag'] = ''
+
+            # 确保 LassoTag 列存在
+            if 'LassoTag' not in self.df.columns:
+                self.df['LassoTag'] = ''
+
+            # 给圈选条目打标记
+            self.df.loc[list(new_idx), 'LassoTag'] = cat_name
+
+            self.category_list.insert(0, {'name': cat_name, 'indices': new_idx,
                                           'ordered_indices': ordered_indices,
                                           'color': self.color_cycle[(cat_id - 1) % len(self.color_cycle)]})
             self.refresh_all()
@@ -1216,7 +1467,6 @@ class OCRApp:
         cat_idx = set()
         row_counter = 0  # 全局行计数，用于交替背景色
         for i, cat in enumerate(self.category_list):
-            if not cat['indices']: continue
             tag = f"tag_{cat['color']}"
             self.tree.tag_configure(tag, foreground=cat['color'], font=("", self.current_font_size, "bold"))
             pid = self.tree.insert("", "end", text=f"📂 {cat['name']}", open=True, tags=(tag,))
@@ -1682,6 +1932,7 @@ class OCRApp:
                 return
             
             # 执行批量修改
+            undo_snapshot = self._create_classifier_snapshot()
             changed_count = 0
             skipped_count = 0
             for item in items_to_change:
@@ -1695,6 +1946,11 @@ class OCRApp:
 
             # 只刷新树，不重绘图表
             if changed_count:
+                undo_snapshot['action_name'] = f"批量改组为{target_group}"
+                self.undo_stack.append(undo_snapshot)
+                if len(self.undo_stack) > self.undo_limit:
+                    self.undo_stack.pop(0)
+                self.update_undo_button_state()
                 self.refresh_tree_only()
                 msg = f"✓ 「{category_name}」{changed_count} 个项目 → {target_group}组"
                 if skipped_count:
@@ -1711,6 +1967,7 @@ class OCRApp:
         try:
             selected = [i for i in self.tree.selection() if self.tree.exists(i) and self.tree.parent(i)]
             target_items = selected if clicked_iid in selected else [clicked_iid]
+            undo_snapshot = self._create_classifier_snapshot()
             changed_count = 0
             skipped_count = 0
 
@@ -1729,6 +1986,11 @@ class OCRApp:
                 changed_count += 1
 
             if changed_count:
+                undo_snapshot['action_name'] = f"改组为{group_value}"
+                self.undo_stack.append(undo_snapshot)
+                if len(self.undo_stack) > self.undo_limit:
+                    self.undo_stack.pop(0)
+                self.update_undo_button_state()
                 self.refresh_tree_only()
                 if len(target_items) > 1:
                     msg = f"✓ 已改组 {changed_count} 项 → {group_value}组"
@@ -1761,6 +2023,8 @@ class OCRApp:
                 new_group = 'C'
                 
                 # 更新DataFrame中的组值
+                if old_group != new_group:
+                    self.push_undo_snapshot("改组为C")
                 self.df.loc[idx, 'Group'] = new_group
                 
                 # 只刷新树，不重绘图表
@@ -1991,12 +2255,15 @@ class OCRApp:
             # 根据编辑类型更新数据
             if edit_info['edit_type'] == 'category':
                 # 更新分类名称
+                self.push_undo_snapshot("重命名分类")
                 iid = edit_info['iid']
                 old_name = edit_info['original_value']
                 idx = self.tree.get_children("").index(iid)
                 
                 if idx < len(self.category_list):
                     self.category_list[idx]['name'] = new_value
+                    if 'LassoTag' in self.df.columns:
+                        self.df.loc[self.df['LassoTag'] == old_name, 'LassoTag'] = new_value
                 else:
                     self.custom_cat_names[old_name] = new_value
                 
@@ -2005,6 +2272,7 @@ class OCRApp:
                 
             elif edit_info['edit_type'] == 'item_name':
                 # 更新数据项名称
+                self.push_undo_snapshot("编辑名称")
                 values = self.tree.item(edit_info['iid'], 'values')
                 if values and len(values) > 3:
                     idx = int(values[3])
@@ -2014,6 +2282,7 @@ class OCRApp:
                     
             elif edit_info['edit_type'] == 'item_group':
                 # 更新数据项组
+                self.push_undo_snapshot("修改组值")
                 values = self.tree.item(edit_info['iid'], 'values')
                 if values and len(values) > 3:
                     idx = int(values[3])
@@ -2134,6 +2403,7 @@ class OCRApp:
         try:
             # 按索引倒序处理，避免索引变化影响
             items_to_split.sort(key=lambda x: x['idx'], reverse=True)
+            self.push_undo_snapshot("拆分A组")
             
             split_count = 0
             total_count = len(items_to_split)
@@ -2343,6 +2613,7 @@ class OCRApp:
             
             # 执行批量修改
             modified_count = 0
+            undo_snapshot = self._create_classifier_snapshot()
             for item in data_items:
                 try:
                     idx = item['index']
@@ -2353,6 +2624,12 @@ class OCRApp:
                     print(f"修改项目 {item['name']} 失败: {e}")
             
             # 刷新显示
+            if modified_count:
+                undo_snapshot['action_name'] = f"批量改组为{new_group}"
+                self.undo_stack.append(undo_snapshot)
+                if len(self.undo_stack) > self.undo_limit:
+                    self.undo_stack.pop(0)
+                self.update_undo_button_state()
             self.refresh_all()
             
             # 显示结果
@@ -2386,6 +2663,7 @@ class OCRApp:
                 
                 if new_name and new_name != old_name:
                     # 更新DataFrame中的数据
+                    self.push_undo_snapshot("编辑名称")
                     self.df.loc[idx, 'Label'] = new_name
                     self.refresh_all()
                     messagebox.showinfo("成功", f"名称已更新：\n{old_name} → {new_name}")
@@ -2405,9 +2683,12 @@ class OCRApp:
             
             if new_name and new_name != old_name:
                 # 查找并更新分类名称
+                self.push_undo_snapshot("重命名分类")
                 idx = self.tree.get_children("").index(iid)
                 if idx < len(self.category_list):
                     self.category_list[idx]['name'] = new_name
+                    if 'LassoTag' in self.df.columns:
+                        self.df.loc[self.df['LassoTag'] == old_name, 'LassoTag'] = new_name
                 else:
                     self.custom_cat_names[old_name] = new_name
                 
@@ -2426,16 +2707,10 @@ class OCRApp:
                 
                 if messagebox.askyesno("确认删除", f"确定要删除以下数据项吗？\n\n名称：{name}"):
                     # 从DataFrame中删除
+                    self.push_undo_snapshot("删除数据")
                     self.df = self.df.drop(idx).reset_index(drop=True)
-                    
-                    # 重新整理Order列
                     self.reorder_dataframe()
-                    
-                    # 从标记集合中移除
-                    if idx in self.marked_indices:
-                        self.marked_indices.remove(idx)
-                    # 更新索引（因为删除了一行，后面的索引都要减1）
-                    self.marked_indices = {i-1 if i > idx else i for i in self.marked_indices if i != idx}
+                    self._shift_category_indices_after_delete([idx])
                     
                     self.refresh_all()
                     messagebox.showinfo("成功", f"已删除数据项：{name}")
@@ -2533,6 +2808,7 @@ class OCRApp:
                 
                 # 应用新颜色
                 if selected_color[0] != current_color:
+                    self.push_undo_snapshot("更改分类颜色")
                     self.category_list[idx]['color'] = selected_color[0]
                     self.refresh_all()
                     messagebox.showinfo("成功", f"分类「{category_name}」的颜色已更新")
@@ -2595,12 +2871,13 @@ class OCRApp:
         merged_label = f"{label1} {label2}"
 
         # 更新第一行，删除第二行
+        self.push_undo_snapshot("合并两行")
         self.df.loc[idx1, 'Label'] = merged_label
         self.df.loc[idx1, 'Group'] = group1
         self.df = self.df.drop(idx2).reset_index(drop=True)
         self.reorder_dataframe()
+        self._shift_category_indices_after_delete([idx2])
 
-        self.category_list, self.marked_indices = [], set()
         self.refresh_all()
         self.show_temp_message(f"✓ 已合并：{merged_label}")
 
@@ -2609,10 +2886,22 @@ class OCRApp:
         items = self.tree.selection()
         indices = [int(self.tree.item(i, 'values')[3]) for i in items if self.tree.parent(i)]
         if indices and messagebox.askyesno("确认", "删除数据？"):
+            self.push_undo_snapshot("删除数据")
             self.df = self.df.drop(indices).reset_index(drop=True)
-            # 重新整理Order列
             self.reorder_dataframe()
-            self.category_list, self.marked_indices = [], set();
+
+            # 用 LassoTag 重建 category_list 索引（比偏移计算更可靠）
+            if self.category_list and not self.df.empty and 'LassoTag' in self.df.columns:
+                for cat in self.category_list:
+                    tag = cat['name']
+                    matched = self.df.index[self.df['LassoTag'] == tag].tolist()
+                    matched_set = set(matched)
+                    if cat.get('ordered_indices') is not None:
+                        cat['ordered_indices'] = [i for i in cat['ordered_indices'] if i in matched_set]
+                    cat['indices'] = matched_set
+            else:
+                self._shift_category_indices_after_delete(indices)
+
             self.refresh_all()
 
     def reset_all(self, silent=False):
@@ -2631,10 +2920,11 @@ class OCRApp:
 
     def clear_all_data(self):
         """清空分类目录树和文本报告"""
-        if not messagebox.askyesno("确认清空", "确定要清空分类目录树和文本报告吗？\n此操作不可撤销。"):
+        if not messagebox.askyesno("确认清空", "确定要清空分类目录树和文本报告吗？\n可以使用「撤销」恢复上一步。"):
             return
 
         # 清空数据
+        self.push_undo_snapshot("清空分类目录树")
         self.df = pd.DataFrame(columns=['Label', 'Y', 'X', 'Group', 'Order'])
         self.thresholds = []
         self.category_list = []
@@ -2691,17 +2981,38 @@ class OCRApp:
             messagebox.showwarning("提示", "没有数据可以处理！")
             return
 
+        undo_snapshot = self._create_classifier_snapshot()
+
+        # 确保 LassoTag 列存在
+        if 'LassoTag' not in self.df.columns:
+            self.df['LassoTag'] = ''
+
         # --- 加空格 ---
         space_modified = self.add_spaces_to_tree_items(silent=True)
-
-        # --- 拆分 A 组 ---
-        split_count = self._split_group_a_silent()
 
         # --- 清理规则 ---
         filter_changed, filter_removed = self._apply_filter_rules_silent()
 
-        # 统一刷新一次
-        self.category_list, self.marked_indices = [], set()
+        # --- 拆分 A 组 ---
+        split_count = self._split_group_a_silent()
+
+        # 修正后用 LassoTag 重建 category_list 的索引
+        if self.category_list and not self.df.empty:
+            for cat in self.category_list:
+                tag = cat['name']
+                matched = self.df.index[self.df['LassoTag'] == tag].tolist()
+                matched_set = set(matched)
+                # 保持 ordered_indices 的相对顺序，只保留仍存在的
+                if cat.get('ordered_indices') is not None:
+                    cat['ordered_indices'] = [i for i in cat['ordered_indices'] if i in matched_set]
+                    # 补上新出现的（理论上圈选不会新增，但防御性处理）
+                    for i in matched:
+                        if i not in matched_set:
+                            cat['ordered_indices'].append(i)
+                cat['indices'] = matched_set
+
+        # 统一刷新一次（保留圈选分类，只清标记）
+        self.marked_indices = set()
         self.refresh_all()
 
         # 汇总结果
@@ -2717,6 +3028,11 @@ class OCRApp:
             parts.append(msg)
 
         if parts:
+            undo_snapshot['action_name'] = "修正"
+            self.undo_stack.append(undo_snapshot)
+            if len(self.undo_stack) > self.undo_limit:
+                self.undo_stack.pop(0)
+            self.update_undo_button_state()
             self.show_temp_message("✓ 修正完成：" + " | ".join(parts))
             messagebox.showinfo("修正完成", "\n".join(parts))
         else:
@@ -3385,6 +3701,7 @@ class OCRApp:
             self.df = pd.DataFrame(data, columns=['Label', 'Y', 'X', 'Group'])
             # 添加Order列，初始顺序就是数据的原始顺序
             self.df['Order'] = range(len(self.df))
+            self.df['LassoTag'] = ''
             self.reset_all(silent=True)
             self.main_notebook.select(self.classifier_tab)
             self.classifier_notebook.select(self.tab_plt)
@@ -4226,20 +4543,47 @@ class OCRApp:
             # 如果没有安装tkinterdnd2，使用Windows原生方法
             pass
         
-        # 绑定拖放事件到主窗口和文件标签
+        # 绑定拖放事件到主窗口、拖拽区和文件标签
         try:
-            self.root.drop_target_register('DND_Files')
-            self.root.dnd_bind('<<Drop>>', self._on_drop)
-            
+            drop_targets = [self.root]
+            if hasattr(self, 'drop_zone'):
+                drop_targets.append(self.drop_zone)
             if hasattr(self, 'file_label'):
-                self.file_label.drop_target_register('DND_Files')
-                self.file_label.dnd_bind('<<Drop>>', self._on_drop)
-                
-                # 添加拖放提示
-                self.file_label.config(text="未选择文件 | 💡 可拖放图片到此处", fg="gray")
+                drop_targets.append(self.file_label)
+
+            for target in drop_targets:
+                target.drop_target_register(DND_FILES)
+                target.dnd_bind('<<Drop>>', self._on_drop)
+                target.dnd_bind('<<DragEnter>>', self._on_drag_enter)
+                target.dnd_bind('<<DragLeave>>', self._on_drag_leave)
         except:
             # 如果拖放功能不可用，忽略错误
             pass
+
+    def _set_drop_zone_style(self, active=False):
+        """更新拖拽区视觉状态。"""
+        if not hasattr(self, 'drop_zone') or not hasattr(self, 'file_label'):
+            return
+
+        if active:
+            bg = "#D6ECFF"
+            relief = tk.SOLID
+        else:
+            bg = "#EAF4FF"
+            relief = tk.GROOVE
+
+        self.drop_zone.config(bg=bg, relief=relief)
+        self.file_label.config(bg=bg)
+
+    def _on_drag_enter(self, event):
+        """拖入窗口时高亮拖拽区。"""
+        self._set_drop_zone_style(active=True)
+        return getattr(event, 'action', None)
+
+    def _on_drag_leave(self, event):
+        """拖离窗口时恢复拖拽区。"""
+        self._set_drop_zone_style(active=False)
+        return getattr(event, 'action', None)
     
     def _on_drop(self, event):
         """处理拖放事件"""
@@ -4249,42 +4593,16 @@ class OCRApp:
             print(f"拖放原始数据: {files}")  # 调试信息
             print(f"数据类型: {type(files)}")  # 调试信息
             
-            # 处理不同格式的路径
-            file_list = []
+            self._set_drop_zone_style(active=False)
+
+            # Tk 原生 splitlist 能正确处理空格、中文和多文件路径。
             if isinstance(files, (tuple, list)):
                 file_list = [str(f) for f in files]
-            elif isinstance(files, str):
-                files = files.strip()
-                import re
-                # 统一解析混合格式：{带空格路径} 和 不带空格路径 可能同时出现
-                # 例如: {C:\path with space\a.jpg} C:\path\b.jpg
-                parsed = []
-                remaining = files
-                while remaining:
-                    remaining = remaining.strip()
-                    if not remaining:
-                        break
-                    if remaining.startswith('{'):
-                        # 带花括号的路径（含空格）
-                        end = remaining.find('}')
-                        if end != -1:
-                            parsed.append(remaining[1:end])
-                            remaining = remaining[end + 1:]
-                        else:
-                            parsed.append(remaining[1:])
-                            break
-                    else:
-                        # 不带花括号：取到下一个空格或结尾
-                        # 但要注意 Windows 路径可能以盘符开头
-                        m = re.match(r'([A-Za-z]:[^\s{]+|[^\s{]+)', remaining)
-                        if m:
-                            parsed.append(m.group(1))
-                            remaining = remaining[m.end():]
-                        else:
-                            break
-                file_list = parsed if parsed else [files]
             else:
-                file_list = [str(files)]
+                try:
+                    file_list = list(self.root.tk.splitlist(str(files)))
+                except tk.TclError:
+                    file_list = [str(files)]
             
             print(f"解析后的文件列表: {file_list}")  # 调试信息
             
@@ -4330,16 +4648,7 @@ class OCRApp:
                 messagebox.showwarning("提示", f"请拖放图片文件！\n\n找到 {len(cleaned_files)} 个文件，但都不是图片格式\n支持格式：JPG, PNG, BMP等")
                 return
             
-            if len(image_files) == 1:
-                self._show_single_image_drop_options(image_files[0])
-            elif len(image_files) == 2:
-                self._show_multi_image_options(image_files)
-            else:
-                if messagebox.askyesno(
-                    "批量识别",
-                    f"检测到 {len(image_files)} 张图片，将按拖入顺序进行高精度批量识别。\n\n是否开始？"
-                ):
-                    self._start_high_accuracy_recognition(image_files)
+            self._show_drop_preview_options(image_files)
         
         except Exception as e:
             print(f"拖放处理错误: {e}")
@@ -4358,39 +4667,202 @@ class OCRApp:
 
         self.root.after(300, self.perform_ocr)
 
+    def _start_quick_recognition(self, image_files):
+        """选择图片后启动快速识别。"""
+        if len(image_files) == 1:
+            self.select_file_internal(image_files[0])
+            self.progress_label.config(text="✓ 已通过拖放选择 1 个文件，准备快速识别")
+        else:
+            self.batch_select_files_internal(image_files)
+            self.progress_label.config(text=f"✓ 已通过拖放选择 {len(image_files)} 个文件，准备快速批量识别")
+
+        self.root.after(300, self.perform_quick_ocr)
+
+    def _start_general_recognition(self, image_files):
+        """选择图片后启动通用识别。"""
+        if len(image_files) == 1:
+            self.select_file_internal(image_files[0])
+            self.progress_label.config(text="✓ 已通过拖放选择 1 个文件，准备通用识别")
+        else:
+            self.batch_select_files_internal(image_files)
+            self.progress_label.config(text=f"✓ 已通过拖放选择 {len(image_files)} 个文件，准备通用批量识别")
+
+        self.root.after(300, self.perform_general_ocr)
+
+    def _get_image_drop_info(self, image_file):
+        """读取拖入图片信息，并判断各识别模式是否可用。"""
+        info = {
+            'path': image_file,
+            'name': os.path.basename(image_file),
+            'width': 0,
+            'height': 0,
+            'size_text': '',
+            'accurate': False,
+            'basic': False,
+            'general': False,
+            'error': None
+        }
+
+        try:
+            with Image.open(image_file) as img:
+                info['width'], info['height'] = img.size
+
+            file_size = os.path.getsize(image_file)
+            if file_size < 1024 * 1024:
+                info['size_text'] = f"{file_size / 1024:.1f}KB"
+            else:
+                info['size_text'] = f"{file_size / (1024 * 1024):.1f}MB"
+
+            width = info['width']
+            height = info['height']
+            info['accurate'] = (
+                self.size_limit_unlocked or (
+                    self.size_limits["accurate_min_width"] <= width <= self.size_limits["accurate_max_width"] and
+                    self.size_limits["accurate_min_height"] <= height <= self.size_limits["accurate_max_height"]
+                )
+            )
+            info['basic'] = (
+                self.size_limits["basic_min_width"] <= width <= self.size_limits["basic_max_width"] and
+                self.size_limits["basic_min_height"] <= height <= self.size_limits["basic_max_height"]
+            )
+            info['general'] = (
+                self.size_limits["general_min_width"] <= width <= self.size_limits["general_max_width"] and
+                self.size_limits["general_min_height"] <= height <= self.size_limits["general_max_height"]
+            )
+        except Exception as e:
+            info['error'] = str(e)
+
+        return info
+
+    def _get_drop_recommendation(self, image_infos):
+        """根据拖入图片数量和尺寸给出推荐操作。"""
+        count = len(image_infos)
+        valid_infos = [info for info in image_infos if not info.get('error')]
+
+        if not valid_infos:
+            return "裁剪识别", "crop", "无法读取图片尺寸，建议先进入裁剪窗口确认图片。"
+
+        if count == 2:
+            return "推荐：拼接图片", "merge", "检测到 2 张图片，适合先预览拼接方向再识别。"
+
+        all_accurate = all(info['accurate'] for info in valid_infos)
+        all_general = all(info['general'] for info in valid_infos)
+        all_basic = all(info['basic'] for info in valid_infos)
+
+        if all_accurate:
+            return "推荐：高精度识别", "accurate", "所有图片都符合高精度识别尺寸要求。"
+        if all_general:
+            return "推荐：通用识别", "general", "图片尺寸更适合通用识别。"
+        if all_basic:
+            return "推荐：快速识别", "basic", "图片尺寸更适合快速识别。"
+
+        return "推荐：裁剪识别", "crop", "部分图片尺寸不符合识别范围，建议先裁剪或调整。"
+
+    def _show_drop_preview_options(self, image_files):
+        """显示拖入图片预览和推荐操作。"""
+        from PIL import ImageTk
+
+        image_infos = [self._get_image_drop_info(path) for path in image_files]
+        recommend_text, recommend_action, recommend_reason = self._get_drop_recommendation(image_infos)
+        count = len(image_files)
+
+        win_h = 560 if count <= 2 else 620
+        option_window = self.create_popup_window(self.root, "拖入图片预览", "drop_preview_options", 680, win_h)
+        option_window.preview_photos = []
+
+        tk.Label(option_window, text=f"检测到 {count} 张图片",
+                 font=("Microsoft YaHei", 14, "bold")).pack(pady=(16, 6))
+        tk.Label(option_window, text=recommend_reason,
+                 fg="#555555", font=("Microsoft YaHei", 10), wraplength=610).pack(pady=(0, 10))
+
+        preview_frame = tk.Frame(option_window, bg="#F7FAFC")
+        preview_frame.pack(fill=tk.X, padx=20, pady=4)
+
+        preview_count = min(count, 6)
+        for i, info in enumerate(image_infos[:preview_count]):
+            card = tk.Frame(preview_frame, bg="white", relief=tk.GROOVE, bd=1)
+            card.grid(row=i // 3, column=i % 3, padx=8, pady=8, sticky="nsew")
+            preview_frame.grid_columnconfigure(i % 3, weight=1)
+
+            try:
+                with Image.open(info['path']) as img:
+                    img.thumbnail((150, 95), Image.Resampling.LANCZOS)
+                    photo = ImageTk.PhotoImage(img.copy())
+                option_window.preview_photos.append(photo)
+                tk.Label(card, image=photo, bg="white").pack(padx=6, pady=(6, 4))
+            except Exception:
+                tk.Label(card, text="无法预览", bg="white", fg="#B00020",
+                         width=18, height=5).pack(padx=6, pady=(6, 4))
+
+            detail = info['name']
+            if info.get('error'):
+                detail += "\n读取失败"
+            else:
+                modes = []
+                if info['accurate']:
+                    modes.append("高精度")
+                if info['basic']:
+                    modes.append("快速")
+                if info['general']:
+                    modes.append("通用")
+                modes_text = "、".join(modes) if modes else "无可用模式"
+                detail += f"\n{info['width']}x{info['height']}  {info['size_text']}\n可用：{modes_text}"
+
+            tk.Label(card, text=detail, bg="white", fg="#1F2937",
+                     justify=tk.LEFT, wraplength=175, font=("Microsoft YaHei", 8)).pack(
+                         padx=6, pady=(0, 8), anchor=tk.W)
+
+        if count > preview_count:
+            tk.Label(option_window, text=f"还有 {count - preview_count} 张图片未显示预览，将按拖入顺序处理。",
+                     fg="#666666", font=("Microsoft YaHei", 9)).pack(pady=(2, 6))
+
+        def close_and_run(action):
+            option_window.destroy()
+            if action == "accurate":
+                self._start_high_accuracy_recognition(image_files)
+            elif action == "basic":
+                self._start_quick_recognition(image_files)
+            elif action == "general":
+                self._start_general_recognition(image_files)
+            elif action == "merge":
+                self._merge_images_from_drag(image_files)
+            elif action == "crop":
+                self._open_crop_window(image_files)
+
+        button_frame = tk.Frame(option_window)
+        button_frame.pack(pady=(14, 6))
+
+        tk.Button(button_frame, text=recommend_text, command=lambda: close_and_run(recommend_action),
+                  bg="#1976D2", fg="white", padx=24, pady=9,
+                  font=("Microsoft YaHei", 10, "bold")).pack(side=tk.LEFT, padx=6)
+
+        if count == 2 and recommend_action != "merge":
+            tk.Button(button_frame, text="拼接图片", command=lambda: close_and_run("merge"),
+                      bg="#FF9800", fg="white", padx=18, pady=8,
+                      font=("Microsoft YaHei", 10)).pack(side=tk.LEFT, padx=6)
+
+        tk.Button(button_frame, text="高精度识别", command=lambda: close_and_run("accurate"),
+                  bg="#2196F3", fg="white", padx=18, pady=8,
+                  font=("Microsoft YaHei", 10)).pack(side=tk.LEFT, padx=6)
+        tk.Button(button_frame, text="通用识别", command=lambda: close_and_run("general"),
+                  bg="#9C27B0", fg="white", padx=18, pady=8,
+                  font=("Microsoft YaHei", 10)).pack(side=tk.LEFT, padx=6)
+        tk.Button(button_frame, text="快速识别", command=lambda: close_and_run("basic"),
+                  bg="#00BCD4", fg="white", padx=18, pady=8,
+                  font=("Microsoft YaHei", 10)).pack(side=tk.LEFT, padx=6)
+
+        bottom_frame = tk.Frame(option_window)
+        bottom_frame.pack(pady=(4, 12))
+        tk.Button(bottom_frame, text="裁剪识别", command=lambda: close_and_run("crop"),
+                  bg="#4CAF50", fg="white", padx=18, pady=8,
+                  font=("Microsoft YaHei", 10)).pack(side=tk.LEFT, padx=6)
+        tk.Button(bottom_frame, text="取消", command=option_window.destroy,
+                  bg="#757575", fg="white", padx=22, pady=8,
+                  font=("Microsoft YaHei", 10)).pack(side=tk.LEFT, padx=6)
+
     def _show_single_image_drop_options(self, image_file):
         """显示单张图片拖入操作选项。"""
-        option_window = self.create_popup_window(self.root, "选择操作", "single_image_options", 460, 300)
-
-        tk.Label(option_window, text="🖼️ 检测到 1 张图片",
-                font=("Arial", 14, "bold")).pack(pady=18)
-
-        tk.Label(option_window, text=os.path.basename(image_file),
-                fg="blue", font=("Arial", 10), wraplength=400).pack(pady=4)
-
-        tk.Label(option_window, text="请选择操作方式：",
-                font=("Arial", 10)).pack(pady=12)
-
-        btn_frame = tk.Frame(option_window)
-        btn_frame.pack(pady=18)
-
-        def high_accuracy_action():
-            option_window.destroy()
-            self._start_high_accuracy_recognition([image_file])
-
-        def crop_action():
-            option_window.destroy()
-            self._open_crop_window([image_file])
-
-        tk.Button(btn_frame, text="高精度识别", command=high_accuracy_action,
-                  bg="#2196F3", fg="white", padx=24, pady=10,
-                  font=("Arial", 11, "bold")).pack(side=tk.LEFT, padx=8)
-        tk.Button(btn_frame, text="裁剪识别", command=crop_action,
-                  bg="#4CAF50", fg="white", padx=24, pady=10,
-                  font=("Arial", 11, "bold")).pack(side=tk.LEFT, padx=8)
-
-        tk.Button(option_window, text="取消", command=option_window.destroy,
-                  bg="#757575", fg="white", padx=28, pady=8).pack(pady=10)
+        self._show_drop_preview_options([image_file])
     
     def _show_multi_image_options(self, image_files):
         """显示两张图片拖入操作选项。"""
@@ -6058,14 +6530,20 @@ class OCRApp:
         if self.df.empty or not self.filter_rules:
             return 0, 0
 
+        # 跳过已圈选的条目（LassoTag 非空）
+        if 'LassoTag' not in self.df.columns:
+            self.df['LassoTag'] = ''
+        mask_editable = self.df['LassoTag'] == ''
+
         before_labels = self.df['Label'].copy()
+
         for rule in self.filter_rules:
-            self.df['Label'] = self.df['Label'].str.replace(re.escape(rule), '', regex=True)
-        self.df['Label'] = self.df['Label'].str.strip()
+            self.df.loc[mask_editable, 'Label'] = self.df.loc[mask_editable, 'Label'].str.replace(re.escape(rule), '', regex=True)
+        self.df.loc[mask_editable, 'Label'] = self.df.loc[mask_editable, 'Label'].str.strip()
 
         changed = int((self.df['Label'] != before_labels).sum())
 
-        empty_mask = self.df['Label'] == ''
+        empty_mask = (self.df['Label'] == '') & mask_editable
         removed = int(empty_mask.sum())
         if removed > 0:
             self.df = self.df[~empty_mask].reset_index(drop=True)
@@ -6078,11 +6556,16 @@ class OCRApp:
         if self.df.empty:
             return 0
 
+        # 跳过已圈选的条目（LassoTag 非空）
+        if 'LassoTag' not in self.df.columns:
+            self.df['LassoTag'] = ''
+
         items_to_split = [
             {'idx': idx, 'label': row['Label'], 'y': row['Y'],
              'x': row['X'], 'order': row.get('Order', idx)}
             for idx, row in self.df.iterrows()
             if row['Group'] == 'A' and len(row['Label']) > 2
+            and row.get('LassoTag', '') == ''
         ]
 
         if not items_to_split:
@@ -8317,9 +8800,21 @@ class OCRApp:
         for var in (prefix_var, font_family_var, font_size_var, font_weight_var, color_var, test_text_var):
             var.trace_add("write", update_preview)
 
-        button(footer, "取消", win.destroy, bg="#FFFFFF", fg="#374151").pack(side=tk.RIGHT, padx=(8, 0))
-        button(footer, "保存并应用", lambda: save_current(close_after=True),
-               bg=primary, fg="white").pack(side=tk.RIGHT)
+        # 备份规则，供取消时还原
+        import copy
+        _rules_backup = copy.deepcopy(self.font_style_rules)
+
+        def on_cancel():
+            self.font_style_rules = copy.deepcopy(_rules_backup)
+            self.save_font_style_config()
+            self.refresh_all()
+            win.destroy()
+
+        button(footer, "取消", on_cancel, bg="#FFFFFF", fg="#374151").pack(side=tk.RIGHT, padx=(8, 0))
+        button(footer, "应用", lambda: save_current(close_after=True),
+               bg=primary, fg="white").pack(side=tk.RIGHT, padx=(8, 0))
+        button(footer, "保存", lambda: save_current(close_after=False),
+               bg="#4CAF50", fg="white").pack(side=tk.RIGHT)
 
         refresh_rules_list()
     
