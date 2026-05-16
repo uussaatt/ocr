@@ -1000,99 +1000,119 @@ class OCRApp:
                 cat['ordered_indices'] = cat_new_order[name]
 
     def open_add_data_dialog(self):
-        """打开新增数据对话框 (美化版)"""
-        # 使用 create_popup_window 创建窗口，统一风格
-        dialog = self.create_popup_window(self.root, "新增数据", "add_data_dialog", 420, 400)
-        
+        """打开新增条目对话框"""
+        dialog = self.create_popup_window(self.root, "新增条目", "add_data_dialog", 400, 280)
+        dialog.configure(bg="#F8FAFC")
+        dialog.resizable(False, False)
+
         # 准备默认数据
         default_y, default_x, insert_pos = 0.0, 0.0, len(self.df)
+        insert_after_label = "末尾"
         selected = self.tree.selection()
         if selected and self.tree.parent(selected[0]):
             vals = self.tree.item(selected[0], 'values')
-            if len(vals) > 3:  # 确保有足够的值
-                row_idx = int(vals[3])  # 索引现在在第4列
+            if len(vals) > 3:
+                row_idx = int(vals[3])
                 if row_idx in self.df.index:
-                    default_y, default_x = self.df.loc[row_idx, 'Y'] + 1, self.df.loc[row_idx, 'X']
+                    default_y = self.df.loc[row_idx, 'Y'] + 1
+                    default_x = self.df.loc[row_idx, 'X']
                     insert_pos = self.df.index.get_loc(row_idx) + 1
+                    insert_after_label = str(vals[0])[:12] + ("…" if len(str(vals[0])) > 12 else "")
 
-        # 1. 标题头
-        tk.Label(dialog, text="➕ 添加新数据点", font=("Microsoft YaHei", 14, "bold"), fg="#333").pack(pady=(20, 15))
+        # 默认组：跟选中条目一致
+        default_group = 'B'
+        if selected and self.tree.parent(selected[0]):
+            vals = self.tree.item(selected[0], 'values')
+            if len(vals) > 2:
+                default_group = self._get_group_from_values(vals)
 
-        # 2. 表单区域
-        form_frame = tk.Frame(dialog)
-        form_frame.pack(padx=40, pady=5, fill=tk.X)
-        
-        # 样式配置
-        lbl_font = ("Microsoft YaHei", 10)
-        ent_font = ("Arial", 11)
-        
-        # 名称
-        tk.Label(form_frame, text="名称 Name:", font=lbl_font, fg="#555").grid(row=0, column=0, sticky="w", pady=8)
-        n_ent = tk.Entry(form_frame, font=ent_font, bg="white", highlightthickness=1, relief="solid", bd=1)
-        n_ent.config(highlightbackground="#ccc", highlightcolor="#2196F3") # Mac/Unix only potentially, but harmless
-        n_ent.grid(row=0, column=1, sticky="ew", padx=(10, 0))
+        # ── 顶部标题栏 ──
+        header = tk.Frame(dialog, bg="#22C55E", height=52)
+        header.pack(fill=tk.X)
+        header.pack_propagate(False)
+        tk.Label(header, text="＋  新增条目", bg="#22C55E", fg="white",
+                 font=("Microsoft YaHei", 13, "bold")).pack(side=tk.LEFT, padx=18, pady=12)
+
+        # ── 插入位置提示 ──
+        hint_frame = tk.Frame(dialog, bg="#F0FDF4", bd=0)
+        hint_frame.pack(fill=tk.X, padx=16, pady=(12, 0))
+        tk.Label(hint_frame, text=f"📍 将插入到「{insert_after_label}」下方",
+                 bg="#F0FDF4", fg="#16A34A",
+                 font=("Microsoft YaHei", 9)).pack(anchor="w", padx=10, pady=6)
+
+        # ── 表单 ──
+        form = tk.Frame(dialog, bg="#F8FAFC")
+        form.pack(fill=tk.X, padx=16, pady=(10, 0))
+
+        tk.Label(form, text="名称", bg="#F8FAFC", fg="#374151",
+                 font=("Microsoft YaHei", 10, "bold")).grid(row=0, column=0, sticky="w", pady=(0, 6))
+        n_ent = tk.Entry(form, font=("Microsoft YaHei", 11), bg="white",
+                         relief="flat", bd=0, highlightthickness=2,
+                         highlightbackground="#D1D5DB", highlightcolor="#22C55E")
+        n_ent.grid(row=0, column=1, sticky="ew", padx=(10, 0), pady=(0, 6), ipady=5)
         n_ent.focus_set()
-        
-        # Y坐标
-        tk.Label(form_frame, text="数值 Y:", font=lbl_font, fg="#555").grid(row=1, column=0, sticky="w", pady=8)
-        y_ent = tk.Entry(form_frame, font=ent_font, bg="white", highlightthickness=1, relief="solid", bd=1)
-        y_ent.insert(0, str(default_y))
-        y_ent.grid(row=1, column=1, sticky="ew", padx=(10, 0))
-        
-        # X坐标
-        tk.Label(form_frame, text="数值 X (可选):", font=lbl_font, fg="#555").grid(row=2, column=0, sticky="w", pady=8)
-        x_ent = tk.Entry(form_frame, font=ent_font, bg="white", highlightthickness=1, relief="solid", bd=1)
-        x_ent.insert(0, str(default_x))
-        x_ent.grid(row=2, column=1, sticky="ew", padx=(10, 0))
-        
-        # 组选择
-        tk.Label(form_frame, text="组 Group:", font=lbl_font, fg="#555").grid(row=3, column=0, sticky="w", pady=8)
-        group_combo = ttk.Combobox(form_frame, values=['A', 'B', 'C'], state="readonly", font=ent_font)
-        group_combo.set('B')  # 默认选择B
-        group_combo.grid(row=3, column=1, sticky="ew", padx=(10, 0))
-        
-        # 根据名称输入框的内容动态设置默认组值
-        def update_group_default(*args):
+
+        tk.Label(form, text="组", bg="#F8FAFC", fg="#374151",
+                 font=("Microsoft YaHei", 10, "bold")).grid(row=1, column=0, sticky="w", pady=(6, 0))
+
+        # A/B/C 三个切换按钮
+        grp_frame = tk.Frame(form, bg="#F8FAFC")
+        grp_frame.grid(row=1, column=1, sticky="w", padx=(10, 0), pady=(6, 0))
+        selected_group = tk.StringVar(value=default_group)
+        grp_btns = {}
+
+        def set_group(g):
+            selected_group.set(g)
+            colors = {'A': ("#EF4444", "#FEE2E2"), 'B': ("#2563EB", "#DBEAFE"), 'C': ("#16A34A", "#DCFCE7")}
+            for grp, btn in grp_btns.items():
+                if grp == g:
+                    btn.config(bg=colors[grp][0], fg="white", relief="flat")
+                else:
+                    btn.config(bg=colors[grp][1], fg=colors[grp][0], relief="flat")
+
+        for g in ['A', 'B', 'C']:
+            b = tk.Button(grp_frame, text=f"  {g}  ", font=("Microsoft YaHei", 10, "bold"),
+                          relief="flat", bd=0, cursor="hand2", padx=6, pady=4,
+                          command=lambda grp=g: set_group(grp))
+            b.pack(side=tk.LEFT, padx=(0, 6))
+            grp_btns[g] = b
+        set_group(default_group)
+
+        form.columnconfigure(1, weight=1)
+
+        # 名称变化时自动推断组
+        def on_name_change(*args):
             name = n_ent.get().strip()
             if name:
-                default_group = self.get_group_by_text_color(name)
-                group_combo.set(default_group)
-            else:
-                group_combo.set('B')  # 空名称时默认为B
-        
-        # 绑定名称输入框的变化事件
-        n_ent.bind('<KeyRelease>', update_group_default)
-        
-        form_frame.columnconfigure(1, weight=1)
+                g = self.get_group_by_text_color(name)
+                set_group(g)
+        n_ent.bind('<KeyRelease>', on_name_change)
 
-        # 3. 按钮区域
-        btn_frame = tk.Frame(dialog)
-        btn_frame.pack(pady=25, fill=tk.X)
-        
-        # 居中容器
-        center_frame = tk.Frame(btn_frame)
-        center_frame.pack()
+        # ── 按钮区 ──
+        btn_frame = tk.Frame(dialog, bg="#F8FAFC")
+        btn_frame.pack(fill=tk.X, padx=16, pady=(16, 14))
 
-        def save(event=None):
-            name = n_ent.get().strip() or "未命名"
+        def do_save(keep_open=False):
+            name = n_ent.get().strip()
+            if not name:
+                n_ent.config(highlightbackground="#EF4444")
+                n_ent.focus_set()
+                return
+            group_val = selected_group.get()
             try:
-                y_val = float(y_ent.get())
-                x_val = float(x_ent.get())
-                group_val = group_combo.get()
                 self.push_undo_snapshot("新增数据")
-                
-                # 计算新的Order值
+
+                # 计算 Order
                 if insert_pos == 0:
-                    new_order = -1  # 插入到最前面
+                    new_order = -1
                 elif insert_pos >= len(self.df):
-                    new_order = len(self.df)  # 插入到最后面
+                    new_order = float(len(self.df))
                 else:
-                    # 插入到中间，使用前一个和后一个的平均值
-                    prev_order = self.df.iloc[insert_pos-1]['Order'] if insert_pos > 0 else -1
-                    next_order = self.df.iloc[insert_pos]['Order'] if insert_pos < len(self.df) else len(self.df)
+                    prev_order = self.df.iloc[insert_pos - 1]['Order'] if insert_pos > 0 else -1
+                    next_order = self.df.iloc[insert_pos]['Order'] if insert_pos < len(self.df) else float(len(self.df))
                     new_order = (prev_order + next_order) / 2
 
-                # 检测选中条目是否属于某个圈选分类
+                # 检测圈选分类
                 lasso_tag = ''
                 parent_cat = None
                 if selected and self.tree.parent(selected[0]):
@@ -1107,18 +1127,16 @@ class OCRApp:
                                         parent_cat = cat
                                         break
 
-                row_data = {'Label': name, 'Y': y_val, 'X': x_val, 'Group': group_val, 'Order': new_order}
+                row_data = {'Label': name, 'Y': default_y, 'X': default_x,
+                            'Group': group_val, 'Order': new_order}
                 if 'LassoTag' in self.df.columns:
                     row_data['LassoTag'] = lasso_tag
                 row = pd.DataFrame([row_data])
-                self.df = pd.concat([self.df.iloc[:insert_pos], row, self.df.iloc[insert_pos:]]).reset_index(drop=True)
-                
-                # 重新整理Order列，确保顺序正确
+                self.df = pd.concat([self.df.iloc[:insert_pos], row,
+                                     self.df.iloc[insert_pos:]]).reset_index(drop=True)
                 self.reorder_dataframe()
-                
                 self._shift_category_indices_after_insert(insert_pos)
 
-                # 如果新条目属于圈选分类，把新索引加入该分类
                 if parent_cat is not None:
                     new_idx = insert_pos
                     parent_cat['indices'].add(new_idx)
@@ -1130,13 +1148,11 @@ class OCRApp:
                         except ValueError:
                             parent_cat['ordered_indices'].append(new_idx)
 
-                # 直接在树里插入新行，不重建树
+                # 直接插入树行
                 new_df_idx = insert_pos
                 new_status = "☑" if group_val == 'C' else "☐"
                 item_tags = self.get_item_tags(name, group_val, False)
-
                 if selected and self.tree.parent(selected[0]):
-                    # 插入到选中条目的下面
                     ref_iid = selected[0]
                     parent_iid = self.tree.parent(ref_iid)
                     ref_tree_pos = self.tree.index(ref_iid)
@@ -1144,36 +1160,39 @@ class OCRApp:
                                                values=(name, new_status, group_val, new_df_idx),
                                                tags=tuple(item_tags))
                 else:
-                    # 没有选中条目，插到末尾
                     parent_iid = self.tree.get_children("")[0] if self.tree.get_children("") else ""
                     new_iid = self.tree.insert(parent_iid, "end",
                                                values=(name, new_status, group_val, new_df_idx),
                                                tags=tuple(item_tags))
 
-                # 焦点和选中设到新行
                 self.tree.selection_set(new_iid)
                 self.tree.focus(new_iid)
                 self.tree.see(new_iid)
-
                 self.generate_report_from_tree()
-                dialog.destroy()
-            except ValueError:
-                messagebox.showerror("输入错误", "坐标值必须为数字！", parent=dialog)
+
+                if keep_open:
+                    n_ent.delete(0, tk.END)
+                    n_ent.config(highlightbackground="#D1D5DB")
+                    n_ent.focus_set()
+                else:
+                    dialog.destroy()
+
             except Exception as e:
                 messagebox.showerror("错误", f"添加失败: {e}", parent=dialog)
 
-        save_btn = tk.Button(center_frame, text="保 存", command=save, bg="#4CAF50", fg="white", 
-                            font=("Microsoft YaHei", 10, "bold"), width=12, padx=5, pady=3,
-                            cursor="hand2", relief="raised", bd=0)
-        save_btn.pack(side=tk.LEFT, padx=10)
-        
-        cancel_btn = tk.Button(center_frame, text="取 消", command=dialog.destroy, bg="#f5f5f5", fg="#333",
-                              font=("Microsoft YaHei", 10), width=10, padx=5, pady=3,
-                              cursor="hand2", relief="raised")
-        cancel_btn.pack(side=tk.LEFT, padx=10)
-        
-        # 绑定回车键保存
-        dialog.bind('<Return>', save)
+        tk.Button(btn_frame, text="保存", command=lambda: do_save(False),
+                  bg="#22C55E", fg="white", font=("Microsoft YaHei", 10, "bold"),
+                  relief="flat", bd=0, padx=18, pady=7, cursor="hand2").pack(side=tk.LEFT)
+        tk.Button(btn_frame, text="保存并继续", command=lambda: do_save(True),
+                  bg="#2563EB", fg="white", font=("Microsoft YaHei", 10),
+                  relief="flat", bd=0, padx=18, pady=7, cursor="hand2").pack(side=tk.LEFT, padx=(8, 0))
+        tk.Button(btn_frame, text="取消", command=dialog.destroy,
+                  bg="#E5E7EB", fg="#374151", font=("Microsoft YaHei", 10),
+                  relief="flat", bd=0, padx=18, pady=7, cursor="hand2").pack(side=tk.LEFT, padx=(8, 0))
+        tk.Label(btn_frame, text="Enter 保存", bg="#F8FAFC", fg="#9CA3AF",
+                 font=("Microsoft YaHei", 8)).pack(side=tk.RIGHT, padx=4)
+
+        dialog.bind('<Return>', lambda e: do_save(False))
         dialog.bind('<Escape>', lambda e: dialog.destroy())
 
     def on_drag_start(self, event):
