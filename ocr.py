@@ -972,23 +972,32 @@ class OCRApp:
         self.generate_report_from_tree()
 
     def update_order_from_tree(self):
-        """从树视图的当前顺序更新DataFrame中的Order列"""
+        """从树视图的当前顺序更新DataFrame中的Order列，同时更新圈选分类的ordered_indices"""
         if 'Order' not in self.df.columns:
             self.df['Order'] = range(len(self.df))
             return
-        
+
         order_counter = 0
-        
-        # 遍历所有分类目录
+
+        # 遍历所有分类目录，同时收集每个分类的新顺序
+        cat_new_order = {}  # category_name -> [df_idx, ...]
         for category_item in self.tree.get_children(""):
-            # 遍历该分类下的所有数据项
+            cat_name = self.tree.item(category_item, 'text').replace("📂 ", "")
+            cat_new_order[cat_name] = []
             for data_item in self.tree.get_children(category_item):
                 values = self.tree.item(data_item, 'values')
                 if values and len(values) > 3:
-                    df_idx = int(values[3])  # DataFrame中的索引
+                    df_idx = int(values[3])
                     if df_idx in self.df.index:
                         self.df.loc[df_idx, 'Order'] = order_counter
                         order_counter += 1
+                        cat_new_order[cat_name].append(df_idx)
+
+        # 同步更新圈选分类的 ordered_indices
+        for cat in self.category_list:
+            name = cat['name']
+            if name in cat_new_order:
+                cat['ordered_indices'] = cat_new_order[name]
 
     def open_add_data_dialog(self):
         """打开新增数据对话框 (美化版)"""
@@ -1111,10 +1120,9 @@ class OCRApp:
 
                 # 如果新条目属于圈选分类，把新索引加入该分类
                 if parent_cat is not None:
-                    new_idx = insert_pos  # reset_index 后新行就在 insert_pos
+                    new_idx = insert_pos
                     parent_cat['indices'].add(new_idx)
                     if parent_cat.get('ordered_indices') is not None:
-                        # 插入到选中条目的后面
                         ref_idx = int(self.tree.item(selected[0], 'values')[3])
                         try:
                             pos = parent_cat['ordered_indices'].index(ref_idx)
@@ -1122,7 +1130,32 @@ class OCRApp:
                         except ValueError:
                             parent_cat['ordered_indices'].append(new_idx)
 
-                self.refresh_all()
+                # 直接在树里插入新行，不重建树
+                new_df_idx = insert_pos
+                new_status = "☑" if group_val == 'C' else "☐"
+                item_tags = self.get_item_tags(name, group_val, False)
+
+                if selected and self.tree.parent(selected[0]):
+                    # 插入到选中条目的下面
+                    ref_iid = selected[0]
+                    parent_iid = self.tree.parent(ref_iid)
+                    ref_tree_pos = self.tree.index(ref_iid)
+                    new_iid = self.tree.insert(parent_iid, ref_tree_pos + 1,
+                                               values=(name, new_status, group_val, new_df_idx),
+                                               tags=tuple(item_tags))
+                else:
+                    # 没有选中条目，插到末尾
+                    parent_iid = self.tree.get_children("")[0] if self.tree.get_children("") else ""
+                    new_iid = self.tree.insert(parent_iid, "end",
+                                               values=(name, new_status, group_val, new_df_idx),
+                                               tags=tuple(item_tags))
+
+                # 焦点和选中设到新行
+                self.tree.selection_set(new_iid)
+                self.tree.focus(new_iid)
+                self.tree.see(new_iid)
+
+                self.generate_report_from_tree()
                 dialog.destroy()
             except ValueError:
                 messagebox.showerror("输入错误", "坐标值必须为数字！", parent=dialog)
@@ -1230,10 +1263,14 @@ class OCRApp:
                     self.show_temp_message(f"✓ 已是 {group_value}组")
                     return
                 self.push_undo_snapshot("修改组值")
-                # 更新DataFrame中的组值
                 self.df.loc[idx, 'Group'] = group_value
-                # 只刷新树，不重绘图表
-                self.refresh_tree_only()
+                # 直接更新树中该行的显示，不重建整棵树（避免顺序变化）
+                label_text = values[0]
+                new_status = "☑" if group_value == 'C' else "☐"
+                self.tree.item(iid, values=(label_text, new_status, group_value, idx))
+                item_tags = self.get_item_tags(label_text, group_value, idx in self.marked_indices)
+                self.tree.item(iid, tags=tuple(item_tags))
+                self.generate_report_from_tree()
                 self.show_temp_message(f"✓ 组已更新为：{group_value}")
         except Exception as e:
             print(f"设置组值失败: {e}")
@@ -1265,7 +1302,13 @@ class OCRApp:
                 return
             self.push_undo_snapshot("切换C组")
             self.df.loc[idx, 'Group'] = new_group
-            self.refresh_tree_only()
+            # 直接更新树中该行的显示，不重建整棵树
+            label_text = values[0]
+            new_status = "☑" if new_group == 'C' else "☐"
+            self.tree.item(iid, values=(label_text, new_status, new_group, idx))
+            item_tags = self.get_item_tags(label_text, new_group, idx in self.marked_indices)
+            self.tree.item(iid, tags=tuple(item_tags))
+            self.generate_report_from_tree()
         except Exception as e:
             print(f"切换复选框失败: {e}")
 
@@ -2277,7 +2320,12 @@ class OCRApp:
                 if values and len(values) > 3:
                     idx = int(values[3])
                     self.df.loc[idx, 'Label'] = new_value
-                    self.refresh_tree_only()
+                    group = self._get_group_from_values(values)
+                    new_status = "☑" if group == 'C' else "☐"
+                    self.tree.item(edit_info['iid'], values=(new_value, new_status, group, idx))
+                    item_tags = self.get_item_tags(new_value, group, idx in self.marked_indices)
+                    self.tree.item(edit_info['iid'], tags=tuple(item_tags))
+                    self.generate_report_from_tree()
                     self.show_temp_message(f"✓ 已更新：{new_value}")
                     
             elif edit_info['edit_type'] == 'item_group':
@@ -2287,7 +2335,12 @@ class OCRApp:
                 if values and len(values) > 3:
                     idx = int(values[3])
                     self.df.loc[idx, 'Group'] = new_value
-                    self.refresh_tree_only()
+                    label_text = values[0]
+                    new_status = "☑" if new_value == 'C' else "☐"
+                    self.tree.item(edit_info['iid'], values=(label_text, new_status, new_value, idx))
+                    item_tags = self.get_item_tags(label_text, new_value, idx in self.marked_indices)
+                    self.tree.item(edit_info['iid'], tags=tuple(item_tags))
+                    self.generate_report_from_tree()
                     self.show_temp_message(f"✓ 组已更新：{new_value}")
             
         except Exception as e:
@@ -2870,39 +2923,75 @@ class OCRApp:
 
         merged_label = f"{label1} {label2}"
 
-        # 更新第一行，删除第二行
         self.push_undo_snapshot("合并两行")
+
+        # 直接更新树：第一行改文字，第二行删除
+        new_status = "☑" if group1 == 'C' else "☐"
+        self.tree.item(selected[0], values=(merged_label, new_status, group1, idx1))
+        item_tags = self.get_item_tags(merged_label, group1, idx1 in self.marked_indices)
+        self.tree.item(selected[0], tags=tuple(item_tags))
+        self.tree.delete(selected[1])
+
+        # 焦点落在第一行
+        self.tree.selection_set(selected[0])
+        self.tree.focus(selected[0])
+        self.tree.see(selected[0])
+
+        # 更新 df
         self.df.loc[idx1, 'Label'] = merged_label
         self.df.loc[idx1, 'Group'] = group1
+        self._shift_category_indices_after_delete([idx2])
         self.df = self.df.drop(idx2).reset_index(drop=True)
         self.reorder_dataframe()
-        self._shift_category_indices_after_delete([idx2])
 
-        self.refresh_all()
+        # 用 LassoTag 同步 indices
+        if self.category_list and not self.df.empty and 'LassoTag' in self.df.columns:
+            for cat in self.category_list:
+                tag = cat['name']
+                matched_set = set(self.df.index[self.df['LassoTag'] == tag].tolist())
+                if cat.get('ordered_indices') is not None:
+                    cat['ordered_indices'] = [i for i in cat['ordered_indices'] if i in matched_set]
+                cat['indices'] = matched_set
+
+        self.generate_report_from_tree()
         self.show_temp_message(f"✓ 已合并：{merged_label}")
 
     def delete_selected_data(self):
         """删除选中数据"""
         items = self.tree.selection()
-        indices = [int(self.tree.item(i, 'values')[3]) for i in items if self.tree.parent(i)]
-        if indices and messagebox.askyesno("确认", "删除数据？"):
-            self.push_undo_snapshot("删除数据")
-            self.df = self.df.drop(indices).reset_index(drop=True)
-            self.reorder_dataframe()
+        # 只处理数据项（有父节点的），记录 iid 和 df 索引
+        item_pairs = [(i, int(self.tree.item(i, 'values')[3]))
+                      for i in items if self.tree.parent(i)]
+        if not item_pairs:
+            return
+        indices = [idx for _, idx in item_pairs]
+        if not messagebox.askyesno("确认", "删除数据？"):
+            return
 
-            # 用 LassoTag 重建 category_list 索引（比偏移计算更可靠）
-            if self.category_list and not self.df.empty and 'LassoTag' in self.df.columns:
-                for cat in self.category_list:
-                    tag = cat['name']
-                    matched = self.df.index[self.df['LassoTag'] == tag].tolist()
-                    matched_set = set(matched)
-                    if cat.get('ordered_indices') is not None:
-                        cat['ordered_indices'] = [i for i in cat['ordered_indices'] if i in matched_set]
-                    cat['indices'] = matched_set
-            else:
-                self._shift_category_indices_after_delete(indices)
+        self.push_undo_snapshot("删除数据")
 
-            self.refresh_all()
+        # 直接从树里移除这些行，其他条目位置不变
+        for iid, _ in item_pairs:
+            if self.tree.exists(iid):
+                self.tree.delete(iid)
+
+        # 删除前先用偏移计算更新 ordered_indices（此时索引还未变）
+        self._shift_category_indices_after_delete(indices)
+
+        self.df = self.df.drop(indices).reset_index(drop=True)
+        self.reorder_dataframe()
+
+        # reset_index 后再用 LassoTag 更新 indices
+        if self.category_list and not self.df.empty and 'LassoTag' in self.df.columns:
+            for cat in self.category_list:
+                tag = cat['name']
+                matched_set = set(self.df.index[self.df['LassoTag'] == tag].tolist())
+                if cat.get('ordered_indices') is not None:
+                    cat['ordered_indices'] = [i for i in cat['ordered_indices'] if i in matched_set]
+                cat['indices'] = matched_set
+
+        # 只重新生成报告，不重建树
+        self.generate_report_from_tree()
 
     def reset_all(self, silent=False):
         """内部用：重置分类视图（导入数据时调用，不清空数据）"""
@@ -2983,9 +3072,10 @@ class OCRApp:
 
         undo_snapshot = self._create_classifier_snapshot()
 
-        # 确保 LassoTag 列存在
+        # 确保 LassoTag 列存在且无 NaN
         if 'LassoTag' not in self.df.columns:
             self.df['LassoTag'] = ''
+        self.df['LassoTag'] = self.df['LassoTag'].fillna('')
 
         # --- 加空格 ---
         space_modified = self.add_spaces_to_tree_items(silent=True)
@@ -3179,6 +3269,8 @@ class OCRApp:
             total_count = len(self.df)
             
             for idx in self.df.index:
+                if 'LassoTag' in self.df.columns and self.df.loc[idx, 'LassoTag'] not in ('', None) and pd.notna(self.df.loc[idx, 'LassoTag']):
+                    continue
                 original_text = self.df.loc[idx, 'Label']
                 modified_text = self.process_text_with_space_rules(original_text, selected_rules, custom_chars)
                 
@@ -6530,9 +6622,10 @@ class OCRApp:
         if self.df.empty or not self.filter_rules:
             return 0, 0
 
-        # 跳过已圈选的条目（LassoTag 非空）
+        # 跳过已圈选的条目（LassoTag 非空且非NaN）
         if 'LassoTag' not in self.df.columns:
             self.df['LassoTag'] = ''
+        self.df['LassoTag'] = self.df['LassoTag'].fillna('')
         mask_editable = self.df['LassoTag'] == ''
 
         before_labels = self.df['Label'].copy()
@@ -6556,9 +6649,10 @@ class OCRApp:
         if self.df.empty:
             return 0
 
-        # 跳过已圈选的条目（LassoTag 非空）
+        # 跳过已圈选的条目（LassoTag 非空且非NaN）
         if 'LassoTag' not in self.df.columns:
             self.df['LassoTag'] = ''
+        self.df['LassoTag'] = self.df['LassoTag'].fillna('')
 
         items_to_split = [
             {'idx': idx, 'label': row['Label'], 'y': row['Y'],
@@ -6592,11 +6686,11 @@ class OCRApp:
                     break
 
             first_row = pd.DataFrame(
-                [[first_part, item['y'], item['x'], 'A', order]],
-                columns=['Label', 'Y', 'X', 'Group', 'Order'])
+                [[first_part, item['y'], item['x'], 'A', order, '']],
+                columns=['Label', 'Y', 'X', 'Group', 'Order', 'LassoTag'])
             second_row = pd.DataFrame(
-                [[second_part, item['y'], item['x'] + 10, 'C', order + 0.1]],
-                columns=['Label', 'Y', 'X', 'Group', 'Order'])
+                [[second_part, item['y'], item['x'] + 10, 'C', order + 0.1, '']],
+                columns=['Label', 'Y', 'X', 'Group', 'Order', 'LassoTag'])
 
             self.df = pd.concat([
                 self.df.iloc[:insert_pos], first_row, second_row, self.df.iloc[insert_pos:]
