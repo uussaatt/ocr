@@ -442,6 +442,8 @@ class OCRApp:
         self.drag_source_index = None
         self.drag_indicator = None
         self.undo_stack = []
+        self.redo_stack = []
+        self._pending_snapshot = None
         self.undo_limit = 30
         self.enable_lasso_mode = tk.BooleanVar(value=False)
         self.color_cycle = ['#FF0000', '#00AA00', '#FF8C00', '#9400D3', '#0000FF', '#00CED1']
@@ -693,6 +695,7 @@ class OCRApp:
         tk.Button(t_bar, text="↓ 下移", command=self.move_item_down).pack(side=tk.LEFT, padx=2)
         self.undo_btn = tk.Button(t_bar, text="↶ 撤销", command=self.undo_classifier_action, state=tk.DISABLED)
         self.undo_btn.pack(side=tk.LEFT, padx=2)
+        tk.Button(t_bar, text="📋 历史", command=self.show_history_panel, bg="#e8eaf6").pack(side=tk.LEFT, padx=2)
         tk.Label(t_bar, text="|").pack(side=tk.LEFT, padx=2)
         tk.Button(t_bar, text="修正", command=self.apply_corrections, bg="#e3f2fd").pack(side=tk.LEFT, padx=2)
         self.create_tooltip(t_bar.winfo_children()[-1], "依次执行：加空格、拆分A组、清理")
@@ -804,25 +807,43 @@ class OCRApp:
     # ===============================================
     def _create_classifier_snapshot(self):
         """创建分类树可撤销状态快照。"""
+        # 记录当前选中条目的 df 索引
+        selected_df_indices = []
+        if hasattr(self, 'tree'):
+            for iid in self.tree.selection():
+                if self.tree.parent(iid):
+                    vals = self.tree.item(iid, 'values')
+                    if vals and len(vals) > 3:
+                        try:
+                            selected_df_indices.append(int(vals[3]))
+                        except:
+                            pass
         return {
             'df': self.df.copy(deep=True),
             'category_list': copy.deepcopy(self.category_list),
             'marked_indices': set(self.marked_indices),
             'thresholds': list(self.thresholds),
-            'custom_cat_names': copy.deepcopy(self.custom_cat_names)
+            'custom_cat_names': copy.deepcopy(self.custom_cat_names),
+            'selected_df_indices': selected_df_indices,
         }
 
     def push_undo_snapshot(self, action_name="操作"):
-        """保存一次分类树操作前的状态。"""
+        """保存当前状态到历史栈（操作前调用）。"""
         try:
             snapshot = self._create_classifier_snapshot()
             snapshot['action_name'] = action_name
+            self.redo_stack = []  # 新操作清空 redo
             self.undo_stack.append(snapshot)
             if len(self.undo_stack) > self.undo_limit:
                 self.undo_stack.pop(0)
             self.update_undo_button_state()
+            self._refresh_history_panel()
         except Exception as e:
             print(f"保存撤销快照失败: {e}")
+
+    def commit_undo_snapshot(self, action_name=None):
+        """兼容方法，不再需要，保留避免调用报错。"""
+        pass
 
     def update_undo_button_state(self):
         """刷新撤销按钮可用状态。"""
@@ -834,19 +855,131 @@ class OCRApp:
         if not self.undo_stack:
             self.show_temp_message("没有可撤销的操作")
             return
-
         try:
+            # 把当前状态压入 redo 栈
+            current = self._create_classifier_snapshot()
+            current['action_name'] = '（撤销前）'
+            self.redo_stack.append(current)
+
             snapshot = self.undo_stack.pop()
-            self.df = snapshot['df'].copy(deep=True)
-            self.category_list = copy.deepcopy(snapshot['category_list'])
-            self.marked_indices = set(snapshot['marked_indices'])
-            self.thresholds = list(snapshot['thresholds'])
-            self.custom_cat_names = copy.deepcopy(snapshot['custom_cat_names'])
+            self._restore_snapshot(snapshot)
             self.update_undo_button_state()
-            self.refresh_all()
+            self._refresh_history_panel()
             self.show_temp_message(f"↶ 已撤销：{snapshot.get('action_name', '上一步操作')}")
         except Exception as e:
             messagebox.showerror("错误", f"撤销失败：{str(e)}")
+
+    def _restore_snapshot(self, snapshot):
+        """恢复到指定快照状态。"""
+        self.df = snapshot['df'].copy(deep=True)
+        self.category_list = copy.deepcopy(snapshot['category_list'])
+        self.marked_indices = set(snapshot['marked_indices'])
+        self.thresholds = list(snapshot['thresholds'])
+        self.custom_cat_names = copy.deepcopy(snapshot['custom_cat_names'])
+        self.refresh_all()
+
+        # 恢复选中位置
+        selected_df_indices = snapshot.get('selected_df_indices', [])
+        if selected_df_indices and hasattr(self, 'tree'):
+            # 遍历树找到对应的 iid
+            target_iids = []
+            for cat_iid in self.tree.get_children(""):
+                for child_iid in self.tree.get_children(cat_iid):
+                    vals = self.tree.item(child_iid, 'values')
+                    if vals and len(vals) > 3:
+                        try:
+                            if int(vals[3]) in selected_df_indices:
+                                target_iids.append(child_iid)
+                        except:
+                            pass
+            if target_iids:
+                self.tree.selection_set(target_iids)
+                self.tree.focus(target_iids[0])
+                self.tree.see(target_iids[0])
+
+    def jump_to_history(self, index):
+        """跳转到历史记录中的某一步（PS风格）。"""
+        try:
+            if index < 0 or index >= len(self.undo_stack):
+                return
+            # 把当前状态和 index 之后的步骤都移到 redo 栈
+            while len(self.undo_stack) > index + 1:
+                self.redo_stack.append(self.undo_stack.pop())
+            snapshot = self.undo_stack[index]
+            self._restore_snapshot(snapshot)
+            self.update_undo_button_state()
+            self._refresh_history_panel()
+            self.show_temp_message(f"↩ 已跳转：{snapshot.get('action_name', '')}")
+        except Exception as e:
+            messagebox.showerror("错误", f"跳转失败：{str(e)}")
+
+    def show_history_panel(self):
+        """显示历史记录浮窗。"""
+        if hasattr(self, '_history_win') and self._history_win and self._history_win.winfo_exists():
+            self._history_win.lift()
+            return
+
+        win = tk.Toplevel(self.root)
+        win.title("历史记录")
+        win.geometry("260x420")
+        win.resizable(False, True)
+        win.transient(self.root)
+        self._history_win = win
+
+        tk.Label(win, text="📋 历史记录", font=("Microsoft YaHei", 11, "bold"),
+                 bg="#1E293B", fg="white").pack(fill=tk.X, ipady=8)
+
+        frame = tk.Frame(win)
+        frame.pack(fill=tk.BOTH, expand=True)
+
+        sb = ttk.Scrollbar(frame, orient=tk.VERTICAL)
+        sb.pack(side=tk.RIGHT, fill=tk.Y)
+
+        self._history_listbox = tk.Listbox(frame, font=("Microsoft YaHei", 10),
+                                           yscrollcommand=sb.set, activestyle='dotbox',
+                                           selectbackground="#2563EB", selectforeground="white",
+                                           relief="flat", bd=0)
+        self._history_listbox.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        sb.config(command=self._history_listbox.yview)
+
+        def on_select(e):
+            sel = self._history_listbox.curselection()
+            if sel:
+                self.jump_to_history(sel[0])
+
+        self._history_listbox.bind('<<ListboxSelect>>', on_select)
+
+        btn_frame = tk.Frame(win, bg="#F1F5F9")
+        btn_frame.pack(fill=tk.X, pady=4)
+        tk.Button(btn_frame, text="清空历史", command=self._clear_history,
+                  bg="#EF4444", fg="white", relief="flat", font=("Microsoft YaHei", 9),
+                  padx=10, pady=4).pack(side=tk.RIGHT, padx=8)
+
+        self._refresh_history_panel()
+        win.protocol("WM_DELETE_WINDOW", lambda: setattr(self, '_history_win', None) or win.destroy())
+
+    def _refresh_history_panel(self):
+        """刷新历史记录面板内容。"""
+        if not hasattr(self, '_history_listbox') or not self._history_listbox.winfo_exists():
+            return
+        self._history_listbox.delete(0, tk.END)
+        for i, snap in enumerate(self.undo_stack):
+            name = snap.get('action_name', '操作')
+            self._history_listbox.insert(tk.END, f"  {i + 1}.  {name}")
+        # 选中最后一步（当前状态）
+        if self.undo_stack:
+            last = len(self.undo_stack) - 1
+            self._history_listbox.selection_set(last)
+            self._history_listbox.see(last)
+
+    def _clear_history(self):
+        """清空历史记录。"""
+        if messagebox.askyesno("确认", "清空所有历史记录？"):
+            self.undo_stack.clear()
+            self.redo_stack = []
+            self.update_undo_button_state()
+            self._refresh_history_panel()
+            self.show_temp_message("✓ 历史记录已清空")
 
     def save_current_order(self):
         """保存当前树视图中的顺序到DataFrame"""
@@ -929,11 +1062,14 @@ class OCRApp:
         
         # 更新DataFrame中的Order
         if moved_items:
-            undo_snapshot['action_name'] = "上移项目"
+            labels = [self.df.loc[i, 'Label'] if i in self.df.index else str(i) for i in moved_items[:2]]
+            label_str = '、'.join(labels) + ('…' if len(moved_items) > 2 else '')
+            undo_snapshot['action_name'] = f"上移 — {label_str}"
             self.undo_stack.append(undo_snapshot)
             if len(self.undo_stack) > self.undo_limit:
                 self.undo_stack.pop(0)
             self.update_undo_button_state()
+            self._refresh_history_panel()
             self.update_order_from_tree()
         
         self.generate_report_from_tree()
@@ -962,11 +1098,14 @@ class OCRApp:
         
         # 更新DataFrame中的Order
         if moved_items:
-            undo_snapshot['action_name'] = "下移项目"
+            labels = [self.df.loc[i, 'Label'] if i in self.df.index else str(i) for i in moved_items[:2]]
+            label_str = '、'.join(labels) + ('…' if len(moved_items) > 2 else '')
+            undo_snapshot['action_name'] = f"下移 — {label_str}"
             self.undo_stack.append(undo_snapshot)
             if len(self.undo_stack) > self.undo_limit:
                 self.undo_stack.pop(0)
             self.update_undo_button_state()
+            self._refresh_history_panel()
             self.update_order_from_tree()
         
         self.generate_report_from_tree()
@@ -1100,7 +1239,7 @@ class OCRApp:
                 return
             group_val = selected_group.get()
             try:
-                self.push_undo_snapshot("新增数据")
+                self.push_undo_snapshot(f"新增条目 — {name}")
 
                 # 计算 Order
                 if insert_pos == 0:
@@ -1281,10 +1420,7 @@ class OCRApp:
                 if old_group == group_value:
                     self.show_temp_message(f"✓ 已是 {group_value}组")
                     return
-                self.push_undo_snapshot("修改组值")
-                self.df.loc[idx, 'Group'] = group_value
-                # 直接更新树中该行的显示，不重建整棵树（避免顺序变化）
-                label_text = values[0]
+                self.push_undo_snapshot(f"修改组值 — {values[0]} {old_group}→{group_value}")
                 new_status = "☑" if group_value == 'C' else "☐"
                 self.tree.item(iid, values=(label_text, new_status, group_value, idx))
                 item_tags = self.get_item_tags(label_text, group_value, idx in self.marked_indices)
@@ -1319,7 +1455,7 @@ class OCRApp:
             if current_group == new_group:
                 self.show_temp_message(f"✓ 已是 {new_group}组")
                 return
-            self.push_undo_snapshot("切换C组")
+            self.push_undo_snapshot(f"切换C组 — {values[0]} {current_group}→{new_group}")
             self.df.loc[idx, 'Group'] = new_group
             # 直接更新树中该行的显示，不重建整棵树
             label_text = values[0]
@@ -1405,7 +1541,8 @@ class OCRApp:
 
         if target and target != source_item:
             try:
-                self.push_undo_snapshot("拖拽排序")
+                src_label = self.tree.item(source_item, 'values')[0] if self.tree.item(source_item, 'values') else ''
+                self.push_undo_snapshot(f"拖拽排序 — {src_label}")
                 target_parent = self.tree.parent(target)
                 if target_parent:
                     dest_p = target_parent
@@ -2317,7 +2454,7 @@ class OCRApp:
             # 根据编辑类型更新数据
             if edit_info['edit_type'] == 'category':
                 # 更新分类名称
-                self.push_undo_snapshot("重命名分类")
+                self.push_undo_snapshot(f"重命名分类 — {edit_info['original_value']}→{new_value}")
                 iid = edit_info['iid']
                 old_name = edit_info['original_value']
                 idx = self.tree.get_children("").index(iid)
@@ -2334,7 +2471,7 @@ class OCRApp:
                 
             elif edit_info['edit_type'] == 'item_name':
                 # 更新数据项名称
-                self.push_undo_snapshot("编辑名称")
+                self.push_undo_snapshot(f"编辑名称 — {edit_info['original_value']}→{new_value}")
                 values = self.tree.item(edit_info['iid'], 'values')
                 if values and len(values) > 3:
                     idx = int(values[3])
@@ -2349,8 +2486,9 @@ class OCRApp:
                     
             elif edit_info['edit_type'] == 'item_group':
                 # 更新数据项组
-                self.push_undo_snapshot("修改组值")
                 values = self.tree.item(edit_info['iid'], 'values')
+                old_grp = self._get_group_from_values(values) if values else ''
+                self.push_undo_snapshot(f"修改组值 — {values[0] if values else ''} {old_grp}→{new_value}")
                 if values and len(values) > 3:
                     idx = int(values[3])
                     self.df.loc[idx, 'Group'] = new_value
@@ -2942,7 +3080,7 @@ class OCRApp:
 
         merged_label = f"{label1} {label2}"
 
-        self.push_undo_snapshot("合并两行")
+        self.push_undo_snapshot(f"合并两行 — {label1} + {label2}")
 
         # 直接更新树：第一行改文字，第二行删除
         new_status = "☑" if group1 == 'C' else "☐"
@@ -2987,7 +3125,9 @@ class OCRApp:
         if not messagebox.askyesno("确认", "删除数据？"):
             return
 
-        self.push_undo_snapshot("删除数据")
+        deleted_labels = [self.tree.item(i, 'values')[0] for i, _ in item_pairs if self.tree.exists(i)]
+        label_str = '、'.join(deleted_labels[:3]) + ('…' if len(deleted_labels) > 3 else '')
+        self.push_undo_snapshot(f"删除 — {label_str}")
 
         # 直接从树里移除这些行，其他条目位置不变
         for iid, _ in item_pairs:
@@ -3137,7 +3277,7 @@ class OCRApp:
             parts.append(msg)
 
         if parts:
-            undo_snapshot['action_name'] = "修正"
+            undo_snapshot['action_name'] = "修正 — " + " | ".join(parts)
             self.undo_stack.append(undo_snapshot)
             if len(self.undo_stack) > self.undo_limit:
                 self.undo_stack.pop(0)
@@ -3810,10 +3950,15 @@ class OCRApp:
                     continue
         if data:
             self.df = pd.DataFrame(data, columns=['Label', 'Y', 'X', 'Group'])
-            # 添加Order列，初始顺序就是数据的原始顺序
             self.df['Order'] = range(len(self.df))
             self.df['LassoTag'] = ''
             self.reset_all(silent=True)
+
+            # 自动执行空格规则和清理规则
+            self.add_spaces_to_tree_items(silent=True)
+            self._apply_filter_rules_silent()
+            self.refresh_all()
+
             self.main_notebook.select(self.classifier_tab)
             self.classifier_notebook.select(self.tab_plt)
 
