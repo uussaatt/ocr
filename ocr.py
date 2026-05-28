@@ -1511,12 +1511,9 @@ class OCRApp:
                     self.show_temp_message(f"✓ 已是 {group_value}组")
                     return
                 self.push_undo_snapshot(f"修改组值 — {values[0]} {old_group}→{group_value}")
-                new_status = "☑" if group_value == 'C' else "☐"
                 if idx in self.df.index:
                     self.df.loc[idx, 'Group'] = group_value
-                self.tree.item(iid, values=(label_text, new_status, group_value, idx))
-                item_tags = self.get_item_tags(label_text, group_value, idx in self.marked_indices)
-                self.tree.item(iid, tags=tuple(item_tags))
+                self.update_tree_item_in_place(iid, label_text=label_text, group_value=group_value)
                 self.generate_report_from_tree()
                 self.show_temp_message(f"✓ 组已更新为：{group_value}")
         except Exception as e:
@@ -1551,10 +1548,7 @@ class OCRApp:
             self.df.loc[idx, 'Group'] = new_group
             # 直接更新树中该行的显示，不重建整棵树
             label_text = values[0]
-            new_status = "☑" if new_group == 'C' else "☐"
-            self.tree.item(iid, values=(label_text, new_status, new_group, idx))
-            item_tags = self.get_item_tags(label_text, new_group, idx in self.marked_indices)
-            self.tree.item(iid, tags=tuple(item_tags))
+            self.update_tree_item_in_place(iid, label_text=label_text, group_value=new_group)
             self.generate_report_from_tree()
         except Exception as e:
             print(f"切换复选框失败: {e}")
@@ -1982,6 +1976,44 @@ class OCRApp:
         
         return item_tags
 
+    def update_tree_item_in_place(self, iid, label_text=None, group_value=None):
+        """Update one data row in the tree without rebuilding or reordering siblings."""
+        values = self.tree.item(iid, 'values')
+        if not values or len(values) < 4:
+            return False
+
+        idx = int(values[3])
+        current_label = values[0]
+        current_group = self._get_group_from_values(values)
+        label_text = current_label if label_text is None else label_text
+        group_value = current_group if group_value is None else group_value
+
+        new_status = "☑" if group_value == 'C' else "☐"
+        self.tree.item(iid, values=(label_text, new_status, group_value, idx))
+
+        item_tags = self.get_item_tags(label_text, group_value, idx in self.marked_indices)
+        row_tags = [tag for tag in self.tree.item(iid, 'tags') if tag in ('row_even', 'row_odd')]
+        item_tags.extend(row_tags)
+        self.tree.item(iid, tags=tuple(item_tags))
+        return True
+
+    def rename_category_in_place(self, iid, old_name, new_name):
+        """Rename a category node without rebuilding the tree."""
+        self.tree.item(iid, text=f"📂 {new_name}")
+
+        renamed = False
+        for cat in self.category_list:
+            if cat.get('name') == old_name:
+                cat['name'] = new_name
+                renamed = True
+                break
+
+        if 'LassoTag' in self.df.columns:
+            self.df.loc[self.df['LassoTag'] == old_name, 'LassoTag'] = new_name
+
+        if not renamed:
+            self.custom_cat_names[old_name] = new_name
+
     def get_font_style_tag(self, text):
         """获取文本对应的字体样式标签"""
         for prefix, style in self.font_style_rules.items():
@@ -2242,14 +2274,17 @@ class OCRApp:
                     self.df.loc[idx, 'Group'] = target_group
                     changed_count += 1
 
-            # 只刷新树，不重绘图表
             if changed_count:
                 undo_snapshot['action_name'] = f"批量改组为{target_group}"
                 self.undo_stack.append(undo_snapshot)
                 if len(self.undo_stack) > self.undo_limit:
                     self.undo_stack.pop(0)
                 self.update_undo_button_state()
-                self.refresh_tree_only()
+                for child_iid in children:
+                    values = self.tree.item(child_iid, 'values')
+                    if values and len(values) > 3:
+                        self.update_tree_item_in_place(child_iid, label_text=values[0], group_value=target_group)
+                self.generate_report_from_tree()
                 msg = f"✓ 「{category_name}」{changed_count} 个项目 → {target_group}组"
                 if skipped_count:
                     msg += f"（跳过 {skipped_count} 个）"
@@ -2289,7 +2324,13 @@ class OCRApp:
                 if len(self.undo_stack) > self.undo_limit:
                     self.undo_stack.pop(0)
                 self.update_undo_button_state()
-                self.refresh_tree_only()
+                for item in target_items:
+                    if not self.tree.exists(item):
+                        continue
+                    values = self.tree.item(item, 'values')
+                    if values and len(values) > 3:
+                        self.update_tree_item_in_place(item, label_text=values[0], group_value=group_value)
+                self.generate_report_from_tree()
                 if len(target_items) > 1:
                     msg = f"✓ 已改组 {changed_count} 项 → {group_value}组"
                     if skipped_count:
@@ -2325,8 +2366,8 @@ class OCRApp:
                     self.push_undo_snapshot("改组为C")
                 self.df.loc[idx, 'Group'] = new_group
                 
-                # 只刷新树，不重绘图表
-                self.refresh_tree_only()
+                self.update_tree_item_in_place(iid, label_text=item_name, group_value=new_group)
+                self.generate_report_from_tree()
                 
                 # 显示提示消息
                 if old_group != new_group:
@@ -2408,8 +2449,8 @@ class OCRApp:
                 # 更新DataFrame中的组值
                 self.df.loc[idx, 'Group'] = group_value
                 
-                # 只刷新树，不重绘图表
-                self.refresh_tree_only()
+                self.update_tree_item_in_place(iid, label_text=item_name, group_value=group_value)
+                self.generate_report_from_tree()
                 
                 # 显示提示消息
                 if old_group != group_value:
@@ -2593,16 +2634,8 @@ class OCRApp:
                 self.push_undo_snapshot(f"重命名分类 — {edit_info['original_value']}→{new_value}")
                 iid = edit_info['iid']
                 old_name = edit_info['original_value']
-                idx = self.tree.get_children("").index(iid)
-                
-                if idx < len(self.category_list):
-                    self.category_list[idx]['name'] = new_value
-                    if 'LassoTag' in self.df.columns:
-                        self.df.loc[self.df['LassoTag'] == old_name, 'LassoTag'] = new_value
-                else:
-                    self.custom_cat_names[old_name] = new_value
-                
-                self.refresh_tree_only()
+                self.rename_category_in_place(iid, old_name, new_value)
+                self.generate_report_from_tree()
                 self.show_temp_message(f"✓ 分类已重命名：{new_value}")
                 
             elif edit_info['edit_type'] == 'item_name':
@@ -2613,10 +2646,7 @@ class OCRApp:
                     idx = int(values[3])
                     self.df.loc[idx, 'Label'] = new_value
                     group = self._get_group_from_values(values)
-                    new_status = "☑" if group == 'C' else "☐"
-                    self.tree.item(edit_info['iid'], values=(new_value, new_status, group, idx))
-                    item_tags = self.get_item_tags(new_value, group, idx in self.marked_indices)
-                    self.tree.item(edit_info['iid'], tags=tuple(item_tags))
+                    self.update_tree_item_in_place(edit_info['iid'], label_text=new_value, group_value=group)
                     self.generate_report_from_tree()
                     self.show_temp_message(f"✓ 已更新：{new_value}")
                     
@@ -2629,10 +2659,7 @@ class OCRApp:
                     idx = int(values[3])
                     self.df.loc[idx, 'Group'] = new_value
                     label_text = values[0]
-                    new_status = "☑" if new_value == 'C' else "☐"
-                    self.tree.item(edit_info['iid'], values=(label_text, new_status, new_value, idx))
-                    item_tags = self.get_item_tags(label_text, new_value, idx in self.marked_indices)
-                    self.tree.item(edit_info['iid'], tags=tuple(item_tags))
+                    self.update_tree_item_in_place(edit_info['iid'], label_text=label_text, group_value=new_value)
                     self.generate_report_from_tree()
                     self.show_temp_message(f"✓ 组已更新：{new_value}")
             
@@ -2747,7 +2774,8 @@ class OCRApp:
                                  f"找到 {count} 个符合条件的项目：\n\n{preview_text}\n\n" +
                                  "将自动拆分所有这些项目：\n" +
                                  "• 前两个字 → A组\n" +
-                                 "• 其余文字 → C组\n\n" +
+                                 "• 其余文字 → C组\n" +
+                                 "• 其他条目的组值保持不变\n\n" +
                                  "确定要继续吗？"):
             return
         
@@ -2790,7 +2818,8 @@ class OCRApp:
                               f"• 总项目数：{total_items} 个\n\n" +
                               f"💡 拆分规则：\n" +
                               f"• 前两个字 → A组\n" +
-                              f"• 其余文字 → C组")
+                              f"• 其余文字 → C组\n" +
+                              f"• 其他条目的组值保持不变")
             
         except Exception as e:
             # 清除进度显示
@@ -2917,6 +2946,8 @@ class OCRApp:
                     idx = item['index']
                     if idx in self.df.index:
                         self.df.loc[idx, 'Group'] = new_group
+                        if self.tree.exists(item['iid']):
+                            self.update_tree_item_in_place(item['iid'], label_text=item['name'], group_value=new_group)
                         modified_count += 1
                 except Exception as e:
                     print(f"修改项目 {item['name']} 失败: {e}")
@@ -2928,7 +2959,7 @@ class OCRApp:
                 if len(self.undo_stack) > self.undo_limit:
                     self.undo_stack.pop(0)
                 self.update_undo_button_state()
-            self.refresh_all()
+            self.generate_report_from_tree()
             
             # 显示结果
             messagebox.showinfo("修改完成", 
@@ -2963,7 +2994,8 @@ class OCRApp:
                     # 更新DataFrame中的数据
                     self.push_undo_snapshot("编辑名称")
                     self.df.loc[idx, 'Label'] = new_name
-                    self.refresh_all()
+                    self.update_tree_item_in_place(iid, label_text=new_name, group_value=self._get_group_from_values(values))
+                    self.generate_report_from_tree()
                     messagebox.showinfo("成功", f"名称已更新：\n{old_name} → {new_name}")
         except Exception as e:
             messagebox.showerror("错误", f"编辑名称失败：{str(e)}")
@@ -2982,15 +3014,8 @@ class OCRApp:
             if new_name and new_name != old_name:
                 # 查找并更新分类名称
                 self.push_undo_snapshot("重命名分类")
-                idx = self.tree.get_children("").index(iid)
-                if idx < len(self.category_list):
-                    self.category_list[idx]['name'] = new_name
-                    if 'LassoTag' in self.df.columns:
-                        self.df.loc[self.df['LassoTag'] == old_name, 'LassoTag'] = new_name
-                else:
-                    self.custom_cat_names[old_name] = new_name
-                
-                self.refresh_all()
+                self.rename_category_in_place(iid, old_name, new_name)
+                self.generate_report_from_tree()
                 messagebox.showinfo("成功", f"分类名称已更新：\n{old_name} → {new_name}")
         except Exception as e:
             messagebox.showerror("错误", f"重命名分类失败：{str(e)}")
