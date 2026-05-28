@@ -1013,6 +1013,81 @@ class OCRApp:
             self.df = self.df.sort_values('Order').reset_index(drop=True)
             self.df['Order'] = range(len(self.df))
 
+    def _split_group_a_preserve_tree_order(self, progress_callback=None):
+        """Split A-group labels in place without changing category tree order."""
+        if self.df.empty:
+            return 0
+
+        if 'Order' not in self.df.columns:
+            self.df['Order'] = range(len(self.df))
+        if 'LassoTag' not in self.df.columns:
+            self.df['LassoTag'] = ''
+        self.df['LassoTag'] = self.df['LassoTag'].fillna('')
+
+        rows = []
+        old_to_new_indices = {}
+        split_count = 0
+        total_count = int(((self.df['Group'] == 'A') & (self.df['Label'].astype(str).str.len() > 2)).sum())
+
+        for old_idx, row in self.df.sort_values('Order').iterrows():
+            label = str(row['Label'])
+            should_split = row['Group'] == 'A' and len(label) > 2
+            if progress_callback and should_split:
+                progress_callback(split_count + 1, total_count, label)
+
+            if should_split:
+                first_row = row.copy()
+                second_row = row.copy()
+                first_row['Label'] = label[:2]
+                first_row['Group'] = 'A'
+                second_row['Label'] = label[2:]
+                second_row['Group'] = 'C'
+                if 'X' in second_row.index:
+                    second_row['X'] = second_row['X'] + 10
+
+                first_new_idx = len(rows)
+                rows.append(first_row.to_dict())
+                second_new_idx = len(rows)
+                rows.append(second_row.to_dict())
+                old_to_new_indices[old_idx] = [first_new_idx, second_new_idx]
+                split_count += 1
+            else:
+                new_idx = len(rows)
+                rows.append(row.to_dict())
+                old_to_new_indices[old_idx] = [new_idx]
+
+        if split_count == 0:
+            return 0
+
+        self.df = pd.DataFrame(rows, columns=self.df.columns).reset_index(drop=True)
+        self.df['Order'] = range(len(self.df))
+
+        def expand_old_indices(indices):
+            expanded = []
+            seen = set()
+            for old_idx in indices:
+                for new_idx in old_to_new_indices.get(old_idx, []):
+                    if new_idx not in seen:
+                        expanded.append(new_idx)
+                        seen.add(new_idx)
+            return expanded
+
+        for cat in self.category_list:
+            base_order = cat.get('ordered_indices')
+            if base_order is None:
+                base_order = sorted(cat.get('indices', set()), key=lambda idx: old_to_new_indices.get(idx, [idx])[0])
+            else:
+                base_order = list(base_order)
+                missing = [idx for idx in cat.get('indices', set()) if idx not in base_order]
+                base_order.extend(sorted(missing, key=lambda idx: old_to_new_indices.get(idx, [idx])[0]))
+
+            new_ordered = expand_old_indices(base_order)
+            cat['indices'] = set(new_ordered)
+            cat['ordered_indices'] = new_ordered
+
+        self.marked_indices = set(expand_old_indices(self.marked_indices))
+        return split_count
+
     def _shift_category_indices_after_insert(self, insert_pos, count=1):
         """Keep lasso categories aligned after inserting rows into df."""
         def shift_idx(idx):
@@ -2678,75 +2753,22 @@ class OCRApp:
         
         try:
             # 按索引倒序处理，避免索引变化影响
-            items_to_split.sort(key=lambda x: x['idx'], reverse=True)
-            self.push_undo_snapshot("拆分A组")
-            
-            split_count = 0
+            self.push_undo_snapshot("Split A group")
             total_count = len(items_to_split)
-            
-            # 显示进度
-            self.progress_label.config(text=f"正在拆分项目... 0/{total_count}")
+
+            # Show progress
+            self.progress_label.config(text=f"Splitting items... 0/{total_count}")
             self.root.update()
-            
-            for i, item in enumerate(items_to_split):
-                idx = item['idx']
-                label = item['label']
-                y = item['y']
-                x = item['x']
-                order = item['order']
-                
-                # 更新进度
-                self.progress_label.config(text=f"正在拆分项目... {i+1}/{total_count} - {label}")
+
+            def update_split_progress(current, total, label):
+                self.progress_label.config(text=f"Splitting items... {current}/{total} - {label}")
                 self.root.update()
-                
-                # 拆分文字：前两个字 + 其余字
-                first_part = label[:2]  # 前两个字
-                second_part = label[2:]  # 其余字
-                
-                # 删除原始行
-                self.df = self.df.drop(idx).reset_index(drop=True)
-                
-                # 重新整理Order列（因为删除了一行）
-                self.reorder_dataframe()
-                
-                # 计算插入位置（在原位置插入两个新行）
-                insert_pos = 0
-                for i, row in self.df.iterrows():
-                    if row.get('Order', i) >= order:
-                        insert_pos = i
-                        break
-                else:
-                    insert_pos = len(self.df)
-                
-                # 创建两个新行
-                # 第一个单元格：前两个字，组值A
-                first_order = order
-                first_row = pd.DataFrame([[first_part, y, x, 'A', first_order]], 
-                                       columns=['Label', 'Y', 'X', 'Group', 'Order'])
-                
-                # 第二个单元格：其余字，组值C，Order稍大一点
-                second_order = order + 0.1
-                second_row = pd.DataFrame([[second_part, y, x + 10, 'C', second_order]], 
-                                        columns=['Label', 'Y', 'X', 'Group', 'Order'])
-                
-                # 插入新行
-                self.df = pd.concat([
-                    self.df.iloc[:insert_pos], 
-                    first_row, 
-                    second_row, 
-                    self.df.iloc[insert_pos:]
-                ]).reset_index(drop=True)
-                
-                split_count += 1
-            
-            # 清除进度显示
+
+            split_count = self._split_group_a_preserve_tree_order(update_split_progress)
+
+            # Clear progress
             self.progress_label.config(text="")
-            
-            # 重新整理Order列，确保顺序正确
-            self.reorder_dataframe()
-            
-            # 清空分类和标记，重新刷新
-            self.category_list, self.marked_indices = [], set()
+
             self.refresh_all()
             
             # 显示结果
@@ -7108,6 +7130,7 @@ class OCRApp:
         empty_mask = (self.df['Label'] == '') & mask_editable
         removed = int(empty_mask.sum())
         if removed > 0:
+            self._shift_category_indices_after_delete(self.df.index[empty_mask].tolist())
             self.df = self.df[~empty_mask].reset_index(drop=True)
             self.reorder_dataframe()
 
@@ -7115,77 +7138,7 @@ class OCRApp:
 
     def _split_group_a_silent(self):
         """静默拆分所有 A 组且文字数 > 2 的项目，返回拆分数量，不弹窗不刷新。"""
-        if self.df.empty:
-            return 0
-
-        if 'LassoTag' not in self.df.columns:
-            self.df['LassoTag'] = ''
-        self.df['LassoTag'] = self.df['LassoTag'].fillna('')
-
-        items_to_split = [
-            {'idx': idx, 'label': row['Label'], 'y': row['Y'],
-             'x': row['X'], 'order': row.get('Order', idx),
-             'lasso_tag': row.get('LassoTag', '')}
-            for idx, row in self.df.iterrows()
-            if row['Group'] == 'A' and len(row['Label']) > 2
-        ]
-
-        if not items_to_split:
-            return 0
-
-        items_to_split.sort(key=lambda x: x['idx'], reverse=True)
-        split_count = 0
-
-        for item in items_to_split:
-            idx = item['idx']
-            label = item['label']
-            order = item['order']
-            lasso_tag = item['lasso_tag']
-
-            first_part = label[:2]
-            second_part = label[2:]
-
-            self.df = self.df.drop(idx).reset_index(drop=True)
-            self.reorder_dataframe()
-
-            insert_pos = len(self.df)
-            for i, row in self.df.iterrows():
-                if row.get('Order', i) >= order:
-                    insert_pos = i
-                    break
-
-            first_row = pd.DataFrame(
-                [[first_part, item['y'], item['x'], 'A', order, lasso_tag]],
-                columns=['Label', 'Y', 'X', 'Group', 'Order', 'LassoTag'])
-            second_row = pd.DataFrame(
-                [[second_part, item['y'], item['x'] + 10, 'C', order + 0.1, lasso_tag]],
-                columns=['Label', 'Y', 'X', 'Group', 'Order', 'LassoTag'])
-
-            self.df = pd.concat([
-                self.df.iloc[:insert_pos], first_row, second_row, self.df.iloc[insert_pos:]
-            ]).reset_index(drop=True)
-
-            # 如果原条目属于圈选分类，更新该分类的索引
-            if lasso_tag:
-                new_idx1 = insert_pos
-                new_idx2 = insert_pos + 1
-                for cat in self.category_list:
-                    if cat['name'] == lasso_tag:
-                        cat['indices'].discard(idx)
-                        cat['indices'].add(new_idx1)
-                        cat['indices'].add(new_idx2)
-                        if cat.get('ordered_indices') is not None:
-                            try:
-                                pos = cat['ordered_indices'].index(idx)
-                                cat['ordered_indices'][pos:pos+1] = [new_idx1, new_idx2]
-                            except ValueError:
-                                cat['ordered_indices'].extend([new_idx1, new_idx2])
-                        break
-
-            split_count += 1
-
-        self.reorder_dataframe()
-        return split_count
+        return self._split_group_a_preserve_tree_order()
     
     def get_system_fonts(self):
         """获取系统可用字体列表"""
