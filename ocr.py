@@ -431,6 +431,10 @@ class OCRApp:
         self.filter_rules = []  # 用户配置的过滤词/符号列表
         self.load_filter_config()  # 加载过滤规则
 
+        # 替换规则
+        self.replace_rules = []  # [{find: str, replace: str}, ...]
+        self.load_replace_config()
+
         # 报告分隔方式：'line'=----分隔线，'blank'=空行
         self.report_separator = 'line'
         self.df = pd.DataFrame(columns=['Label', 'Y', 'X', 'Group', 'Order'])
@@ -700,6 +704,8 @@ class OCRApp:
         tk.Button(t_bar, text="修正", command=self.apply_corrections, bg="#e3f2fd").pack(side=tk.LEFT, padx=2)
         self.create_tooltip(t_bar.winfo_children()[-1], "依次执行：加空格、拆分A组、清理")
         tk.Button(t_bar, text="⚙️ 空格/清理设置", command=self.show_space_settings, bg="#f3e5f5").pack(side=tk.LEFT, padx=2)
+        tk.Button(t_bar, text="🔄 替换", command=self._run_replace_rules, bg="#fff3e0").pack(side=tk.LEFT, padx=2)
+        tk.Button(t_bar, text="⚙️ 替换设置", command=self.show_replace_settings, bg="#fff3e0").pack(side=tk.LEFT, padx=2)
         tk.Button(t_bar, text="🎨 字体样式", command=self.show_font_style_settings, bg="#e8f5e8").pack(side=tk.LEFT, padx=2)
         
         # 添加功能提示
@@ -735,6 +741,8 @@ class OCRApp:
         self.tree.bind("<ButtonPress-1>", self.on_drag_start)
         self.tree.bind("<B1-Motion>", self.on_drag_motion)
         self.tree.bind("<ButtonRelease-1>", self.on_drag_release)
+        self.tree.bind("<ButtonPress-1>", self.on_long_press_start, add='+')
+        self.tree.bind("<ButtonRelease-1>", self.on_long_press_cancel, add='+')
         self.tree.bind("<Button-3>", self.on_right_click)
         self.tree.bind("<Double-1>", self.on_double_click)  # 添加双击事件
         self.tree.bind("<space>", self.split_group_a_items)  # 空格键拆分所有A组
@@ -745,6 +753,7 @@ class OCRApp:
         r_bar = tk.Frame(self.tab_report, bg="#ddd")
         r_bar.pack(fill=tk.X, side=tk.TOP)
         tk.Button(r_bar, text="💾 导出 TXT", command=self.export_txt_file, bg="#e1f5fe").pack(side=tk.LEFT, padx=5, pady=2)
+        tk.Button(r_bar, text="导出 Excel", command=self.export_excel_file, bg="#e8f5e9").pack(side=tk.LEFT, padx=2, pady=2)
         tk.Button(r_bar, text="📜 导出历史", command=self.show_export_history, bg="#f3e5f5").pack(side=tk.LEFT, padx=2, pady=2)
         # 添加工具提示
         self.create_tooltip(r_bar.winfo_children()[-1], "查看和管理导出的TXT文件历史记录\n• 查看、复制或保存之前导出的内容\n• 一键导出所有记录（需要密码）\n• 清空所有记录（需要密码）")
@@ -1202,14 +1211,19 @@ class OCRApp:
 
         def set_group(g):
             selected_group.set(g)
-            colors = {'A': ("#EF4444", "#FEE2E2"), 'B': ("#2563EB", "#DBEAFE"), 'C': ("#16A34A", "#DCFCE7")}
+            colors = {
+                'A': ("#EF4444", "#FEE2E2"),
+                'B': ("#2563EB", "#DBEAFE"),
+                'C': ("#16A34A", "#DCFCE7"),
+                'D': ("#7C3AED", "#EDE9FE"),
+            }
             for grp, btn in grp_btns.items():
                 if grp == g:
                     btn.config(bg=colors[grp][0], fg="white", relief="flat")
                 else:
                     btn.config(bg=colors[grp][1], fg=colors[grp][0], relief="flat")
 
-        for g in ['A', 'B', 'C']:
+        for g in ['A', 'B', 'C', 'D']:
             b = tk.Button(grp_frame, text=f"  {g}  ", font=("Microsoft YaHei", 10, "bold"),
                           relief="flat", bd=0, cursor="hand2", padx=6, pady=4,
                           command=lambda grp=g: set_group(grp))
@@ -1381,7 +1395,7 @@ class OCRApp:
             if hasattr(self, '_group_combo') and self._group_combo.winfo_exists():
                 self._group_combo.destroy()
 
-            combo = ttk.Combobox(self.tree, values=['A', 'B', 'C'],
+            combo = ttk.Combobox(self.tree, values=['A', 'B', 'C', 'D'],
                                  state='readonly',
                                  font=("Microsoft YaHei", self.current_font_size))
             combo.set(current_group)
@@ -1416,12 +1430,15 @@ class OCRApp:
             values = self.tree.item(iid, 'values')
             if values and len(values) > 3:
                 idx = int(values[3])
+                label_text = values[0]
                 old_group = self._get_group_from_values(values)
                 if old_group == group_value:
                     self.show_temp_message(f"✓ 已是 {group_value}组")
                     return
                 self.push_undo_snapshot(f"修改组值 — {values[0]} {old_group}→{group_value}")
                 new_status = "☑" if group_value == 'C' else "☐"
+                if idx in self.df.index:
+                    self.df.loc[idx, 'Group'] = group_value
                 self.tree.item(iid, values=(label_text, new_status, group_value, idx))
                 item_tags = self.get_item_tags(label_text, group_value, idx in self.marked_indices)
                 self.tree.item(iid, tags=tuple(item_tags))
@@ -1469,6 +1486,11 @@ class OCRApp:
 
     def on_drag_motion(self, event):
         """拖拽中"""
+        # 移动时取消长按
+        if hasattr(self, '_long_press_job') and self._long_press_job:
+            self.root.after_cancel(self._long_press_job)
+            self._long_press_job = None
+
         if event.y < 24:
             self.tree.yview_scroll(-1, "units")
         elif event.y > self.tree.winfo_height() - 24:
@@ -1901,7 +1923,7 @@ class OCRApp:
                 continue
             if text.lower().startswith(prefix.lower()):
                 # 优先使用规则中明确指定的 target_group
-                if 'target_group' in style and style['target_group'] in ('A', 'B', 'C'):
+                if 'target_group' in style and style['target_group'] in ('A', 'B', 'C', 'D'):
                     return style['target_group']
                 if style.get('target_group') == 'none':
                     return 'B'
@@ -2034,7 +2056,7 @@ class OCRApp:
 
             # 组值快速切换（当前组用 ● 标记）
             group_menu = tk.Menu(context_menu, tearoff=0)
-            for g in ['A', 'B', 'C']:
+            for g in ['A', 'B', 'C', 'D']:
                 label = f"● {g}（当前）" if g == current_group else f"   {g}"
                 group_menu.add_command(
                     label=label,
@@ -2071,6 +2093,8 @@ class OCRApp:
                                      command=lambda: self.batch_set_category_group(iid, 'B'))
             context_menu.add_command(label="🔄 批量改组为 C",
                                      command=lambda: self.batch_set_category_group(iid, 'C'))
+            context_menu.add_command(label="批量改组为 D",
+                                     command=lambda: self.batch_set_category_group(iid, 'D'))
             context_menu.add_separator()
             context_menu.add_command(label="📊 查看统计",
                                      command=lambda: self.show_category_stats(iid))
@@ -2256,7 +2280,7 @@ class OCRApp:
             context_menu.add_separator()
             
             # 添加快速修改选项
-            for group in ['A', 'B', 'C']:
+            for group in ['A', 'B', 'C', 'D']:
                 if group == current_group:
                     # 当前组值用特殊标记，但仍可点击（用于确认）
                     label = f"● {group} (当前)"
@@ -2326,25 +2350,49 @@ class OCRApp:
         """双击事件 - 直接在单元格中编辑"""
         iid = self.tree.identify_row(event.y)
         column = self.tree.identify_column(event.x)
-        
+
         if iid:
             self.tree.selection_set(iid)
-            
+
             if self.tree.parent(iid):
-                # 双击数据项
                 if column == '#1':
-                    # 双击名称列 - 直接编辑
                     self.start_inline_edit(iid, column)
+                    return "break"
                 elif column == '#2':
-                    # 点击复选框列 - 切换C组状态（单击已处理，双击同样触发）
                     self.toggle_c_group(iid)
-                elif column == '#3':
-                    # 双击组列 - 不做任何操作（单击已经能编辑）
-                    pass
+                    return "break"
             else:
-                # 双击分类目录 - 直接编辑分类名
                 if column == '#0':
                     self.start_inline_edit(iid, column)
+                    return "break"
+
+    def on_long_press_start(self, event):
+        """记录按下时间，用于长按检测"""
+        self._long_press_iid = self.tree.identify_row(event.y)
+        self._long_press_col = self.tree.identify_column(event.x)
+        self._long_press_job = self.root.after(
+            600, lambda: self._trigger_long_press(event)
+        )
+
+    def on_long_press_cancel(self, event):
+        """鼠标释放或移动时取消长按"""
+        if hasattr(self, '_long_press_job') and self._long_press_job:
+            self.root.after_cancel(self._long_press_job)
+            self._long_press_job = None
+
+    def _trigger_long_press(self, event):
+        """长按 600ms 后触发编辑"""
+        self._long_press_job = None
+        iid = self._long_press_iid
+        column = self._long_press_col
+        if not iid or not self.tree.exists(iid):
+            return
+        if self.tree.parent(iid) and column == '#1':
+            self.tree.selection_set(iid)
+            self.start_inline_edit(iid, column)
+        elif not self.tree.parent(iid) and column == '#0':
+            self.tree.selection_set(iid)
+            self.start_inline_edit(iid, column)
     
     def start_inline_edit(self, iid, column):
         """开始内联编辑"""
@@ -2388,13 +2436,19 @@ class OCRApp:
             # 创建编辑器控件
             if editor_widget == 'combobox':
                 # 创建下拉框编辑器
-                self.inline_editor = ttk.Combobox(self.tree, values=['A', 'B', 'C'], state="readonly",
+                self.inline_editor = ttk.Combobox(self.tree, values=['A', 'B', 'C', 'D'], state="readonly",
                                                 font=("Microsoft YaHei", self.current_font_size))
                 self.inline_editor.place(x=x, y=y, width=width, height=height)
                 self.inline_editor.set(current_value)
             else:
                 # 创建文本框编辑器
-                self.inline_editor = tk.Entry(self.tree, font=("Microsoft YaHei", self.current_font_size))
+                self.inline_editor = tk.Entry(self.tree,
+                                              font=("Microsoft YaHei", self.current_font_size),
+                                              bg="#EFF6FF",
+                                              highlightthickness=2,
+                                              highlightbackground="#2563EB",
+                                              highlightcolor="#2563EB",
+                                              relief="flat", bd=0)
                 self.inline_editor.place(x=x, y=y, width=width, height=height)
                 # 设置初始值并全选
                 self.inline_editor.insert(0, current_value)
@@ -2409,6 +2463,10 @@ class OCRApp:
                 'original_value': current_value,
                 'edit_type': edit_type
             }
+
+            if edit_type == 'category':
+                self.tree.selection_remove(iid)
+                self.tree.focus('')
             
             # 绑定事件
             self.inline_editor.bind('<Return>', self.finish_inline_edit)
@@ -2417,7 +2475,10 @@ class OCRApp:
             
             # 绑定树视图事件，当用户点击其他地方时结束编辑
             self.tree.bind('<Button-1>', self.on_tree_click_during_edit, add='+')
-            
+
+            # 编辑状态视觉提示
+            self.tree.config(cursor="xterm")
+            self.show_temp_message("✏️ 编辑中 — Enter 确认  Esc 取消", duration=0)
         except Exception as e:
             print(f"开始内联编辑失败: {e}")
     
@@ -2514,15 +2575,19 @@ class OCRApp:
             if hasattr(self, 'inline_editor'):
                 self.inline_editor.destroy()
                 delattr(self, 'inline_editor')
-            
+
             if hasattr(self, 'edit_info'):
                 delattr(self, 'edit_info')
-            
+
             # 解绑树视图的临时事件
             self.tree.unbind('<Button-1>')
             # 重新绑定原有的事件
             self.tree.bind("<ButtonPress-1>", self.on_drag_start)
-            
+
+            # 恢复光标和状态栏
+            self.tree.config(cursor="")
+            self.show_temp_message("")
+
         except Exception as e:
             print(f"清理内联编辑器失败: {e}")
     
@@ -2550,8 +2615,9 @@ class OCRApp:
                                              relief=tk.RAISED, bd=1)
             self.temp_message_label.pack(side=tk.RIGHT)
             
-            # 设置定时器自动隐藏消息
-            self.root.after(duration, lambda: self.hide_temp_message())
+            # 设置定时器自动隐藏消息（duration=0 表示永久显示）
+            if duration > 0:
+                self.root.after(duration, lambda: self.hide_temp_message())
         except:
             pass  # 如果显示临时消息失败，不影响主要功能
     
@@ -2801,7 +2867,7 @@ class OCRApp:
         
         group_var = tk.StringVar(value="A")
         group_combo = ttk.Combobox(group_frame, textvariable=group_var, 
-                                  values=['A', 'B', 'C'], state="readonly", 
+                                  values=['A', 'B', 'C', 'D'], state="readonly", 
                                   font=("Microsoft YaHei", 10), width=10)
         group_combo.pack(side=tk.LEFT, padx=10)
         
@@ -3940,7 +4006,7 @@ class OCRApp:
             if len(parts) >= 3:
                 try:
                     # 如果有第4列，作为组，否则根据文字颜色自动判断
-                    if len(parts) > 3 and parts[3].strip() in ['A', 'B', 'C']:
+                    if len(parts) > 3 and parts[3].strip() in ['A', 'B', 'C', 'D']:
                         group = parts[3].strip()
                     else:
                         # 根据文字颜色自动设置组值
@@ -4027,6 +4093,74 @@ class OCRApp:
                 
             except Exception as e:
                 messagebox.showerror("导出失败", f"导出文件时出错：{str(e)}")
+
+    def export_excel_file(self):
+        """导出分类目录树内容为 Excel，同一分类目录下相同组的条目合并到一个单元格。"""
+        try:
+            rows = []
+            if hasattr(self, 'tree'):
+                for pid in self.tree.get_children(""):
+                    category = str(self.tree.item(pid, "text")).replace("📂", "").strip()
+                    # 按顺序收集条目，相邻且同组的合并
+                    current_group = None
+                    current_labels = []
+
+                    def flush():
+                        if current_labels:
+                            rows.append({
+                                "分类目录": category,
+                                "名称": "\n".join(current_labels),
+                                "组": current_group
+                            })
+
+                    for cid in self.tree.get_children(pid):
+                        vals = self.tree.item(cid, "values")
+                        if not vals or len(vals) < 3:
+                            continue
+                        label = str(vals[0]).strip()
+                        group = self._get_group_from_values(vals)
+                        if not label:
+                            continue
+                        if group == current_group:
+                            current_labels.append(label)
+                        else:
+                            flush()
+                            current_group = group
+                            current_labels = [label]
+                    flush()
+
+            if not rows:
+                messagebox.showwarning("提示", "没有内容可以导出！")
+                return
+
+            path = filedialog.asksaveasfilename(
+                defaultextension=".xlsx",
+                filetypes=[("Excel 文件", "*.xlsx"), ("所有文件", "*.*")],
+                title="导出 Excel"
+            )
+            if not path:
+                return
+
+            df_export = pd.DataFrame(rows, columns=["分类目录", "名称", "组"])
+            with pd.ExcelWriter(path, engine="openpyxl") as writer:
+                df_export.to_excel(writer, index=False)
+                ws = writer.sheets["Sheet1"]
+                from openpyxl.styles import Alignment
+                for row_cells in ws.iter_rows(min_row=2):
+                    for cell in row_cells:
+                        cell.alignment = Alignment(wrap_text=True, vertical="top")
+                for col in ws.columns:
+                    max_len = 0
+                    for cell in col:
+                        for line in str(cell.value or '').split('\n'):
+                            max_len = max(max_len, len(line))
+                    ws.column_dimensions[col[0].column_letter].width = min(max_len + 4, 60)
+            messagebox.showinfo("导出成功", f"Excel 已导出：\n{path}")
+
+        except ImportError:
+            messagebox.showerror("导出失败", "缺少 Excel 写入组件，请安装 openpyxl 后重试。")
+        except Exception as e:
+            messagebox.showerror("导出失败", f"导出 Excel 时出错：{str(e)}")
     
     def save_export_record(self, file_path, content):
         """保存导出记录"""
@@ -6743,6 +6877,177 @@ class OCRApp:
         except Exception as e:
             print(f"⚠️ 保存过滤规则失败: {e}")
 
+    def load_replace_config(self):
+        """加载替换规则"""
+        try:
+            self.replace_rules = self.store.get('replace_rules', [])
+        except Exception as e:
+            print(f"⚠️ 加载替换规则失败: {e}")
+            self.replace_rules = []
+
+    def _run_replace_rules(self):
+        """直接执行替换规则"""
+        if self.df.empty:
+            messagebox.showwarning("提示", "没有数据可以处理！")
+            return
+        if not self.replace_rules:
+            messagebox.showinfo("提示", "还没有配置替换规则，请先点「⚙️ 替换设置」添加规则。")
+            return
+        self.push_undo_snapshot("替换")
+        changed = self.apply_replace_rules()
+        self.refresh_all()
+        if changed:
+            self.show_temp_message(f"✓ 替换完成：修改 {changed} 行")
+        else:
+            self.show_temp_message("✓ 没有匹配的内容")
+
+    def save_replace_config(self):
+        """保存替换规则"""
+        try:
+            self.store.set('replace_rules', self.replace_rules)
+        except Exception as e:
+            print(f"⚠️ 保存替换规则失败: {e}")
+
+    def apply_replace_rules(self, rules=None, silent=False):
+        """执行替换规则，对所有条目生效，返回修改数量"""
+        if self.df.empty:
+            return 0
+        rules = rules if rules is not None else self.replace_rules
+        if not rules:
+            return 0
+
+        before = self.df['Label'].copy()
+        for rule in rules:
+            find = rule.get('find', '')
+            replace = rule.get('replace', '')
+            if not find:
+                continue
+            self.df['Label'] = self.df['Label'].str.replace(re.escape(find), replace, regex=True)
+
+        changed = int((self.df['Label'] != before).sum())
+        return changed
+
+    def show_replace_settings(self):
+        """显示替换规则设置窗口"""
+        win = self.create_popup_window(self.root, "替换规则", "replace_settings", 560, 500)
+        win.configure(bg="#F8FAFC")
+
+        # 标题栏
+        header = tk.Frame(win, bg="#F97316", height=48)
+        header.pack(fill=tk.X)
+        header.pack_propagate(False)
+        tk.Label(header, text="🔄  替换规则", bg="#F97316", fg="white",
+                 font=("Microsoft YaHei", 12, "bold")).pack(side=tk.LEFT, padx=16, pady=10)
+
+        local_rules = [dict(r) for r in self.replace_rules]
+
+        # 规则列表区
+        list_frame = tk.Frame(win, bg="#F8FAFC")
+        list_frame.pack(fill=tk.BOTH, expand=True, padx=16, pady=(12, 0))
+
+        # 列标题
+        hdr = tk.Frame(list_frame, bg="#E2E8F0")
+        hdr.pack(fill=tk.X)
+        tk.Label(hdr, text="查找内容", bg="#E2E8F0", fg="#374151",
+                 font=("Microsoft YaHei", 9, "bold"), width=20, anchor="w").pack(side=tk.LEFT, padx=8, pady=4)
+        tk.Label(hdr, text="替换为（空=删除）", bg="#E2E8F0", fg="#374151",
+                 font=("Microsoft YaHei", 9, "bold"), width=20, anchor="w").pack(side=tk.LEFT, padx=8, pady=4)
+
+        # 滚动区
+        scroll_frame = tk.Frame(list_frame, bg="#F8FAFC")
+        scroll_frame.pack(fill=tk.BOTH, expand=True)
+        sb = ttk.Scrollbar(scroll_frame, orient=tk.VERTICAL)
+        sb.pack(side=tk.RIGHT, fill=tk.Y)
+        canvas = tk.Canvas(scroll_frame, bg="#F8FAFC", highlightthickness=0,
+                           yscrollcommand=sb.set)
+        canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        sb.config(command=canvas.yview)
+        rows_frame = tk.Frame(canvas, bg="#F8FAFC")
+        canvas_win = canvas.create_window((0, 0), window=rows_frame, anchor="nw")
+
+        def on_configure(e):
+            canvas.configure(scrollregion=canvas.bbox("all"))
+            canvas.itemconfig(canvas_win, width=canvas.winfo_width())
+        rows_frame.bind("<Configure>", on_configure)
+        canvas.bind("<Configure>", lambda e: canvas.itemconfig(canvas_win, width=e.width))
+
+        row_widgets = []
+
+        def add_row(find_val='', replace_val=''):
+            row = tk.Frame(rows_frame, bg="#F8FAFC")
+            row.pack(fill=tk.X, pady=2)
+            find_ent = tk.Entry(row, font=("Microsoft YaHei", 10), width=18,
+                                relief="flat", highlightthickness=1,
+                                highlightbackground="#D1D5DB", highlightcolor="#F97316")
+            find_ent.insert(0, find_val)
+            find_ent.pack(side=tk.LEFT, padx=(0, 6), ipady=4)
+            tk.Label(row, text="→", bg="#F8FAFC", fg="#9CA3AF",
+                     font=("Microsoft YaHei", 11)).pack(side=tk.LEFT, padx=4)
+            rep_ent = tk.Entry(row, font=("Microsoft YaHei", 10), width=18,
+                               relief="flat", highlightthickness=1,
+                               highlightbackground="#D1D5DB", highlightcolor="#F97316")
+            rep_ent.insert(0, replace_val)
+            rep_ent.pack(side=tk.LEFT, padx=(6, 8), ipady=4)
+            del_btn = tk.Button(row, text="✕", bg="#FEE2E2", fg="#EF4444",
+                                relief="flat", font=("Microsoft YaHei", 9),
+                                padx=6, pady=2, cursor="hand2",
+                                command=lambda r=row, w=(find_ent, rep_ent): _del_row(r, w))
+            del_btn.pack(side=tk.LEFT)
+            row_widgets.append((find_ent, rep_ent, row))
+
+        def _del_row(row, widgets):
+            row_widgets[:] = [(f, r, rw) for f, r, rw in row_widgets if rw is not row]
+            row.destroy()
+
+        for rule in local_rules:
+            add_row(rule.get('find', ''), rule.get('replace', ''))
+
+        # 底부 버튼
+        btn_bar = tk.Frame(win, bg="#F1F5F9")
+        btn_bar.pack(fill=tk.X, padx=16, pady=10)
+
+        tk.Button(btn_bar, text="＋ 添加规则", command=lambda: add_row(),
+                  bg="#F97316", fg="white", relief="flat",
+                  font=("Microsoft YaHei", 9), padx=10, pady=5,
+                  cursor="hand2").pack(side=tk.LEFT)
+
+        def save_and_apply():
+            rules = []
+            for find_ent, rep_ent, _ in row_widgets:
+                f = find_ent.get()
+                r = rep_ent.get()
+                if f:
+                    rules.append({'find': f, 'replace': r})
+            self.replace_rules = rules
+            self.save_replace_config()
+            self.show_temp_message("✓ 替换规则已保存")
+            win.destroy()
+
+        def save_only():
+            rules = []
+            for find_ent, rep_ent, _ in row_widgets:
+                f = find_ent.get()
+                r = rep_ent.get()
+                if f:
+                    rules.append({'find': f, 'replace': r})
+            self.replace_rules = rules
+            self.save_replace_config()
+            self.show_temp_message("✓ 替换规则已保存")
+            win.destroy()
+
+        tk.Button(btn_bar, text="保存并执行", command=save_and_apply,
+                  bg="#22C55E", fg="white", relief="flat",
+                  font=("Microsoft YaHei", 9, "bold"), padx=10, pady=5,
+                  cursor="hand2").pack(side=tk.RIGHT, padx=(6, 0))
+        tk.Button(btn_bar, text="仅保存", command=save_only,
+                  bg="#2563EB", fg="white", relief="flat",
+                  font=("Microsoft YaHei", 9), padx=10, pady=5,
+                  cursor="hand2").pack(side=tk.RIGHT, padx=(6, 0))
+        tk.Button(btn_bar, text="取消", command=win.destroy,
+                  bg="#E5E7EB", fg="#374151", relief="flat",
+                  font=("Microsoft YaHei", 9), padx=10, pady=5,
+                  cursor="hand2").pack(side=tk.RIGHT)
+
     def show_filter_settings(self):
         """显示过滤清理规则设置窗口"""
         self.show_space_settings()
@@ -6813,17 +7118,16 @@ class OCRApp:
         if self.df.empty:
             return 0
 
-        # 跳过已圈选的条目（LassoTag 非空且非NaN）
         if 'LassoTag' not in self.df.columns:
             self.df['LassoTag'] = ''
         self.df['LassoTag'] = self.df['LassoTag'].fillna('')
 
         items_to_split = [
             {'idx': idx, 'label': row['Label'], 'y': row['Y'],
-             'x': row['X'], 'order': row.get('Order', idx)}
+             'x': row['X'], 'order': row.get('Order', idx),
+             'lasso_tag': row.get('LassoTag', '')}
             for idx, row in self.df.iterrows()
             if row['Group'] == 'A' and len(row['Label']) > 2
-            and row.get('LassoTag', '') == ''
         ]
 
         if not items_to_split:
@@ -6836,6 +7140,7 @@ class OCRApp:
             idx = item['idx']
             label = item['label']
             order = item['order']
+            lasso_tag = item['lasso_tag']
 
             first_part = label[:2]
             second_part = label[2:]
@@ -6850,15 +7155,32 @@ class OCRApp:
                     break
 
             first_row = pd.DataFrame(
-                [[first_part, item['y'], item['x'], 'A', order, '']],
+                [[first_part, item['y'], item['x'], 'A', order, lasso_tag]],
                 columns=['Label', 'Y', 'X', 'Group', 'Order', 'LassoTag'])
             second_row = pd.DataFrame(
-                [[second_part, item['y'], item['x'] + 10, 'C', order + 0.1, '']],
+                [[second_part, item['y'], item['x'] + 10, 'C', order + 0.1, lasso_tag]],
                 columns=['Label', 'Y', 'X', 'Group', 'Order', 'LassoTag'])
 
             self.df = pd.concat([
                 self.df.iloc[:insert_pos], first_row, second_row, self.df.iloc[insert_pos:]
             ]).reset_index(drop=True)
+
+            # 如果原条目属于圈选分类，更新该分类的索引
+            if lasso_tag:
+                new_idx1 = insert_pos
+                new_idx2 = insert_pos + 1
+                for cat in self.category_list:
+                    if cat['name'] == lasso_tag:
+                        cat['indices'].discard(idx)
+                        cat['indices'].add(new_idx1)
+                        cat['indices'].add(new_idx2)
+                        if cat.get('ordered_indices') is not None:
+                            try:
+                                pos = cat['ordered_indices'].index(idx)
+                                cat['ordered_indices'][pos:pos+1] = [new_idx1, new_idx2]
+                            except ValueError:
+                                cat['ordered_indices'].extend([new_idx1, new_idx2])
+                        break
 
             split_count += 1
 
@@ -8844,7 +9166,7 @@ class OCRApp:
         manual_row.pack(fill=tk.X)
         tk.Radiobutton(manual_row, text="手动指定分组", variable=group_mode_var, value="manual",
                        bg="#F8FAFC", font=ui_font).pack(side=tk.LEFT)
-        group_combo = ttk.Combobox(manual_row, textvariable=target_group_var, values=["A", "B", "C"],
+        group_combo = ttk.Combobox(manual_row, textvariable=target_group_var, values=["A", "B", "C", "D"],
                                    state="readonly", width=8)
         group_combo.pack(side=tk.LEFT, padx=8)
 
@@ -8929,7 +9251,7 @@ class OCRApp:
             target = style_data.get("target_group", "auto")
             if target == "none":
                 group_mode_var.set("none")
-            elif target in ("A", "B", "C"):
+            elif target in ("A", "B", "C", "D"):
                 group_mode_var.set("manual")
                 target_group_var.set(target)
             else:
@@ -8999,7 +9321,7 @@ class OCRApp:
                 effective_group = target_group
                 if effective_group == "auto":
                     effective_group = "A" if self._is_red_color(color_var.get()) else "B"
-                if effective_group in ("A", "B", "C"):
+                if effective_group in ("A", "B", "C", "D"):
                     mask = self.df['Label'].str.lower().str.startswith(new_prefix.lower())
                     changed = mask.sum()
                     self.df.loc[mask, 'Group'] = effective_group
@@ -9206,7 +9528,7 @@ class OCRApp:
         tk.Label(group_frame, text="匹配此前缀的条目自动归入：").grid(row=0, column=0, sticky=tk.W)
         target_group_var = tk.StringVar(value='auto')
         group_combo = ttk.Combobox(group_frame, textvariable=target_group_var,
-                                   values=['auto（根据颜色自动判断）', 'A', 'B', 'C'],
+                                   values=['auto（根据颜色自动判断）', 'A', 'B', 'C', 'D'],
                                    state="readonly", width=25)
         group_combo.grid(row=0, column=1, sticky=tk.W, padx=10)
         tk.Label(group_frame, text="auto = 红色→A，其他→B", 
@@ -9230,7 +9552,7 @@ class OCRApp:
             color_var.set(style.get('color', '#000000'))
             desc_var.set(style.get('description', ''))
             tg = style.get('target_group', 'auto')
-            target_group_var.set(tg if tg in ('A', 'B', 'C') else 'auto（根据颜色自动判断）')
+            target_group_var.set(tg if tg in ('A', 'B', 'C', 'D') else 'auto（根据颜色自动判断）')
         else:
             # 设置默认值
             font_family_var.set('Microsoft YaHei')
@@ -9259,7 +9581,7 @@ class OCRApp:
             
             # 保存新的规则
             tg_raw = target_group_var.get()
-            target_group = tg_raw if tg_raw in ('A', 'B', 'C') else 'auto'
+            target_group = tg_raw if tg_raw in ('A', 'B', 'C', 'D') else 'auto'
             self.font_style_rules[new_prefix] = {
                 "font_family": font_family_var.get(),
                 "font_size": int(font_size_var.get()),
