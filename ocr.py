@@ -437,6 +437,7 @@ class OCRApp:
 
         # 报告分隔方式：'line'=----分隔线，'blank'=空行
         self.report_separator = 'line'
+        self.report_format = 'columns'
         self.df = pd.DataFrame(columns=['Label', 'Y', 'X', 'Group', 'Order'])
         self.thresholds = []
         self.category_list = []
@@ -685,9 +686,9 @@ class OCRApp:
         self.inner_nb = ttk.Notebook(self.tab_res)
         self.inner_nb.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
 
-        # --- 分类树 ---
+        # --- 分类表格 ---
         self.tab_tree = tk.Frame(self.inner_nb)
-        self.inner_nb.add(self.tab_tree, text="分类目录树")
+        self.inner_nb.add(self.tab_tree, text="分类表格")
         t_bar = tk.Frame(self.tab_tree, bg="#ddd")
         t_bar.pack(fill=tk.X, side=tk.TOP)
         tk.Button(t_bar, text="➕ 新增", command=self.open_add_data_dialog, bg="#ccffcc").pack(side=tk.LEFT, padx=2,
@@ -701,8 +702,8 @@ class OCRApp:
         self.undo_btn.pack(side=tk.LEFT, padx=2)
         tk.Button(t_bar, text="📋 历史", command=self.show_history_panel, bg="#e8eaf6").pack(side=tk.LEFT, padx=2)
         tk.Label(t_bar, text="|").pack(side=tk.LEFT, padx=2)
-        tk.Button(t_bar, text="修正", command=self.apply_corrections, bg="#e3f2fd").pack(side=tk.LEFT, padx=2)
-        self.create_tooltip(t_bar.winfo_children()[-1], "依次执行：加空格、拆分A组、清理")
+        tk.Button(t_bar, text="拆分A组", command=self.apply_corrections, bg="#e3f2fd").pack(side=tk.LEFT, padx=2)
+        self.create_tooltip(t_bar.winfo_children()[-1], "拆分所有组值为A且文字数大于2的项目")
         tk.Button(t_bar, text="⚙️ 空格/清理设置", command=self.show_space_settings, bg="#f3e5f5").pack(side=tk.LEFT, padx=2)
         tk.Button(t_bar, text="🔄 替换", command=self._run_replace_rules, bg="#fff3e0").pack(side=tk.LEFT, padx=2)
         tk.Button(t_bar, text="⚙️ 替换设置", command=self.show_replace_settings, bg="#fff3e0").pack(side=tk.LEFT, padx=2)
@@ -710,22 +711,24 @@ class OCRApp:
         
         # 添加功能提示
         tk.Label(t_bar, text="💡", fg="blue", bg="#ddd", font=("Arial", 10)).pack(side=tk.LEFT, padx=5)
-        self.create_tooltip(t_bar.winfo_children()[-1], "右击分类目录可批量改组、查看统计或更改颜色\n右击数据项可对当前选择快速改组\n\nC组文字显示为深绿色")
+        self.create_tooltip(t_bar.winfo_children()[-1], "分类目录树已改为表格视图\n右击数据行可对当前选择快速改组\n\nC组文字显示为深绿色")
         
         # 在工具栏右侧添加消息显示区域
         self.message_area = tk.Frame(t_bar, bg="#ddd")
         self.message_area.pack(side=tk.RIGHT, padx=10)
 
-        self.tree = ttk.Treeview(self.tab_tree, columns=('Label', 'Status', 'Group', 'Index'), show='tree headings',
-                                 displaycolumns=('Label', 'Status', 'Group'))
-        self.tree.heading('#0', text='分类目录');
+        self.tree = ttk.Treeview(self.tab_tree, columns=('Label', 'Status', 'Group', 'Index', 'Category', 'CategoryKey'),
+                                 show='headings',
+                                 displaycolumns=('Category', 'Label', 'Status', 'Group'))
+        self.tree.heading('Category', text='分类');
         self.tree.heading('Label', text='名称');
         self.tree.heading('Status', text='C组')
         self.tree.heading('Group', text='组')
         self.tree.column('Index', width=0, stretch=False)
+        self.tree.column('CategoryKey', width=0, stretch=False)
+        self.tree.column('Category', width=220, minwidth=150, stretch=True)
         
         # 设置列宽度 - 确保红色文字能完全显示
-        self.tree.column('#0', width=220, minwidth=150, stretch=True)  # 分类目录列，可拉伸
         self.tree.column('Label', width=400, minwidth=300, stretch=True)  # 名称列，增加到400宽度，可拉伸
         self.tree.column('Status', width=80, minwidth=60, stretch=False)  # 标记列，固定宽度
         self.tree.column('Group', width=60, minwidth=50, stretch=False)  # 组列，固定宽度
@@ -764,6 +767,9 @@ class OCRApp:
         self.separator_btn = tk.Button(r_bar, text="分隔: ----", bg="#e0f0ff",
                                        command=self.toggle_report_separator)
         self.separator_btn.pack(side=tk.LEFT, padx=2)
+        self.report_format_btn = tk.Button(r_bar, text="格式: 三列", bg="#e8eaf6",
+                                           command=self.toggle_report_format)
+        self.report_format_btn.pack(side=tk.LEFT, padx=2)
         
         # 添加空行规则说明
         tk.Label(r_bar, text="💡", fg="blue", bg="#ddd", font=("Arial", 10)).pack(side=tk.RIGHT, padx=5)
@@ -820,7 +826,7 @@ class OCRApp:
         selected_df_indices = []
         if hasattr(self, 'tree'):
             for iid in self.tree.selection():
-                if self.tree.parent(iid):
+                if self.is_tree_data_item(iid):
                     vals = self.tree.item(iid, 'values')
                     if vals and len(vals) > 3:
                         try:
@@ -890,17 +896,16 @@ class OCRApp:
         # 恢复选中位置
         selected_df_indices = snapshot.get('selected_df_indices', [])
         if selected_df_indices and hasattr(self, 'tree'):
-            # 遍历树找到对应的 iid
+            # 遍历表格找到对应的 iid
             target_iids = []
-            for cat_iid in self.tree.get_children(""):
-                for child_iid in self.tree.get_children(cat_iid):
-                    vals = self.tree.item(child_iid, 'values')
-                    if vals and len(vals) > 3:
-                        try:
-                            if int(vals[3]) in selected_df_indices:
-                                target_iids.append(child_iid)
-                        except:
-                            pass
+            for iid in self.tree.get_children(""):
+                vals = self.tree.item(iid, 'values')
+                if vals and len(vals) > 3:
+                    try:
+                        if int(vals[3]) in selected_df_indices:
+                            target_iids.append(iid)
+                    except:
+                        pass
             if target_iids:
                 self.tree.selection_set(target_iids)
                 self.tree.focus(target_iids[0])
@@ -1099,6 +1104,17 @@ class OCRApp:
                 cat['ordered_indices'] = [shift_idx(idx) for idx in cat['ordered_indices']]
         self.marked_indices = {shift_idx(idx) for idx in self.marked_indices}
 
+    def _shift_tree_indices_after_insert(self, insert_pos, count=1):
+        """Keep hidden row indices in the table aligned after inserting rows."""
+        if not hasattr(self, 'tree'):
+            return
+        for iid in self.tree.get_children(""):
+            values = self.tree.item(iid, 'values')
+            if values and len(values) > 3:
+                idx = int(values[3])
+                if idx >= insert_pos:
+                    self.set_tree_row_values(iid, values[0], values[1], values[2], idx + count)
+
     def _shift_category_indices_after_delete(self, deleted_indices):
         """Keep lasso categories aligned after deleting rows from df."""
         deleted = set(deleted_indices)
@@ -1123,6 +1139,23 @@ class OCRApp:
         marked = [map_idx(idx) for idx in self.marked_indices]
         self.marked_indices = {idx for idx in marked if idx is not None}
 
+    def _shift_tree_indices_after_delete(self, deleted_indices):
+        """Keep hidden row indices in the table aligned after deleting rows."""
+        deleted = set(deleted_indices)
+        if not deleted or not hasattr(self, 'tree'):
+            return
+        deleted_sorted = sorted(deleted)
+        for iid in self.tree.get_children(""):
+            values = self.tree.item(iid, 'values')
+            if not values or len(values) <= 3:
+                continue
+            idx = int(values[3])
+            if idx in deleted:
+                continue
+            shift = sum(1 for deleted_idx in deleted_sorted if deleted_idx < idx)
+            if shift:
+                self.set_tree_row_values(iid, values[0], values[1], values[2], idx - shift)
+
     def move_item_up(self):
         """上移项目"""
         selected = self.tree.selection()
@@ -1132,8 +1165,7 @@ class OCRApp:
         undo_snapshot = self._create_classifier_snapshot()
         moved_items = []
         for item in selected:
-            parent = self.tree.parent(item)
-            if parent:
+            if self.is_tree_data_item(item):
                 idx = self.tree.index(item)
                 if idx > 0:
                     # 获取当前项目的DataFrame索引
@@ -1142,7 +1174,7 @@ class OCRApp:
                         current_df_idx = int(values[3])
                         moved_items.append(current_df_idx)
                     
-                    self.tree.move(item, parent, idx - 1)
+                    self.tree.move(item, "", idx - 1)
         
         # 更新DataFrame中的Order
         if moved_items:
@@ -1167,10 +1199,9 @@ class OCRApp:
         undo_snapshot = self._create_classifier_snapshot()
         moved_items = []
         for item in selected:
-            parent = self.tree.parent(item)
-            if parent:
+            if self.is_tree_data_item(item):
                 idx = self.tree.index(item)
-                siblings = self.tree.get_children(parent)
+                siblings = self.tree.get_children("")
                 if idx < len(siblings) - 1:
                     # 获取当前项目的DataFrame索引
                     values = self.tree.item(item, 'values')
@@ -1178,7 +1209,7 @@ class OCRApp:
                         current_df_idx = int(values[3])
                         moved_items.append(current_df_idx)
                     
-                    self.tree.move(item, parent, idx + 1)
+                    self.tree.move(item, "", idx + 1)
         
         # 更新DataFrame中的Order
         if moved_items:
@@ -1202,19 +1233,18 @@ class OCRApp:
 
         order_counter = 0
 
-        # 遍历所有分类目录，同时收集每个分类的新顺序
+        # 遍历表格中的当前行顺序，同时收集每个分类的新顺序
         cat_new_order = {}  # category_name -> [df_idx, ...]
-        for category_item in self.tree.get_children(""):
-            cat_name = self.tree.item(category_item, 'text').replace("📂 ", "")
-            cat_new_order[cat_name] = []
-            for data_item in self.tree.get_children(category_item):
-                values = self.tree.item(data_item, 'values')
-                if values and len(values) > 3:
-                    df_idx = int(values[3])
-                    if df_idx in self.df.index:
-                        self.df.loc[df_idx, 'Order'] = order_counter
-                        order_counter += 1
-                        cat_new_order[cat_name].append(df_idx)
+        for data_item in self.tree.get_children(""):
+            values = self.tree.item(data_item, 'values')
+            if values and len(values) > 3:
+                cat_name = self.get_tree_item_category_key(data_item)
+                cat_new_order.setdefault(cat_name, [])
+                df_idx = int(values[3])
+                if df_idx in self.df.index:
+                    self.df.loc[df_idx, 'Order'] = order_counter
+                    order_counter += 1
+                    cat_new_order[cat_name].append(df_idx)
 
         # 同步更新圈选分类的 ordered_indices
         for cat in self.category_list:
@@ -1232,7 +1262,7 @@ class OCRApp:
         default_y, default_x, insert_pos = 0.0, 0.0, len(self.df)
         insert_after_label = "末尾"
         selected = self.tree.selection()
-        if selected and self.tree.parent(selected[0]):
+        if selected and self.is_tree_data_item(selected[0]):
             vals = self.tree.item(selected[0], 'values')
             if len(vals) > 3:
                 row_idx = int(vals[3])
@@ -1244,7 +1274,7 @@ class OCRApp:
 
         # 默认组：跟选中条目一致
         default_group = 'B'
-        if selected and self.tree.parent(selected[0]):
+        if selected and self.is_tree_data_item(selected[0]):
             vals = self.tree.item(selected[0], 'values')
             if len(vals) > 2:
                 default_group = self._get_group_from_values(vals)
@@ -1343,7 +1373,7 @@ class OCRApp:
                 # 检测圈选分类
                 lasso_tag = ''
                 parent_cat = None
-                if selected and self.tree.parent(selected[0]):
+                if selected and self.is_tree_data_item(selected[0]):
                     vals = self.tree.item(selected[0], 'values')
                     if len(vals) > 3:
                         row_idx = int(vals[3])
@@ -1364,6 +1394,7 @@ class OCRApp:
                                      self.df.iloc[insert_pos:]]).reset_index(drop=True)
                 self.reorder_dataframe()
                 self._shift_category_indices_after_insert(insert_pos)
+                self._shift_tree_indices_after_insert(insert_pos)
 
                 if parent_cat is not None:
                     new_idx = insert_pos
@@ -1380,17 +1411,17 @@ class OCRApp:
                 new_df_idx = insert_pos
                 new_status = "☑" if group_val == 'C' else "☐"
                 item_tags = self.get_item_tags(name, group_val, False)
-                if selected and self.tree.parent(selected[0]):
+                display_category = self.get_tree_item_category(selected[0]) if selected and self.is_tree_data_item(selected[0]) else "5"
+                category_key = lasso_tag or (self.get_tree_item_category_key(selected[0]) if selected and self.is_tree_data_item(selected[0]) else "数据区")
+                if selected and self.is_tree_data_item(selected[0]):
                     ref_iid = selected[0]
-                    parent_iid = self.tree.parent(ref_iid)
                     ref_tree_pos = self.tree.index(ref_iid)
-                    new_iid = self.tree.insert(parent_iid, ref_tree_pos + 1,
-                                               values=(name, new_status, group_val, new_df_idx),
+                    new_iid = self.tree.insert("", ref_tree_pos + 1,
+                                               values=(name, new_status, group_val, new_df_idx, display_category, category_key),
                                                tags=tuple(item_tags))
                 else:
-                    parent_iid = self.tree.get_children("")[0] if self.tree.get_children("") else ""
-                    new_iid = self.tree.insert(parent_iid, "end",
-                                               values=(name, new_status, group_val, new_df_idx),
+                    new_iid = self.tree.insert("", "end",
+                                               values=(name, new_status, group_val, new_df_idx, display_category, category_key),
                                                tags=tuple(item_tags))
 
                 self.tree.selection_set(new_iid)
@@ -1431,17 +1462,17 @@ class OCRApp:
         column = self.tree.identify_column(event.x)
 
         # 单击复选框列 - 切换C组状态
-        if item and self.tree.parent(item) and column == '#2':
+        if item and self.is_tree_data_item(item) and column == '#3':
             self.toggle_c_group(item)
             return
 
         # 检查是否点击了组列
-        if item and self.tree.parent(item) and column == '#3':
+        if item and self.is_tree_data_item(item) and column == '#4':
             self.show_group_dropdown(item, event)
             return
 
         # 正常的拖拽逻辑
-        if item and self.tree.parent(item):
+        if item and self.is_tree_data_item(item):
             self.drag_source_item = item
             values = self.tree.item(item, 'values')
             if values and len(values) > 3:
@@ -1461,7 +1492,7 @@ class OCRApp:
             current_group = self._get_group_from_values(values)
 
             # 获取单元格位置
-            bbox = self.tree.bbox(iid, '#3')
+            bbox = self.tree.bbox(iid, '#4')
             if not bbox:
                 return
             x, y, width, height = bbox
@@ -1600,15 +1631,14 @@ class OCRApp:
         """Find the current Treeview item for a DataFrame row index."""
         if df_index is None:
             return None
-        for category_item in self.tree.get_children(""):
-            for data_item in self.tree.get_children(category_item):
-                values = self.tree.item(data_item, 'values')
-                if values and len(values) > 3:
-                    try:
-                        if int(values[3]) == df_index:
-                            return data_item
-                    except (TypeError, ValueError):
-                        continue
+        for data_item in self.tree.get_children(""):
+            values = self.tree.item(data_item, 'values')
+            if values and len(values) > 3:
+                try:
+                    if int(values[3]) == df_index:
+                        return data_item
+                except (TypeError, ValueError):
+                    continue
         return None
 
     def on_drag_release(self, event):
@@ -1634,16 +1664,13 @@ class OCRApp:
             try:
                 src_label = self.tree.item(source_item, 'values')[0] if self.tree.item(source_item, 'values') else ''
                 self.push_undo_snapshot(f"拖拽排序 — {src_label}")
-                target_parent = self.tree.parent(target)
-                if target_parent:
-                    dest_p = target_parent
-                    bbox = self.tree.bbox(target)
-                    insert_index = self.tree.index(target)
-                    if bbox and event.y > bbox[1] + bbox[3] / 2:
-                        insert_index += 1
-                else:
-                    dest_p = target
-                    insert_index = len(self.tree.get_children(target))
+                if not self.is_tree_data_item(target):
+                    return
+                dest_p = ""
+                bbox = self.tree.bbox(target)
+                insert_index = self.tree.index(target)
+                if bbox and event.y > bbox[1] + bbox[3] / 2:
+                    insert_index += 1
 
                 self.tree.move(source_item, dest_p, insert_index)
                 self.tree.selection_set(source_item)
@@ -1754,12 +1781,13 @@ class OCRApp:
         # 配置字体样式标签
         self.configure_font_style_tags()
         
+        def auto_category_labels(count):
+            start = 6 - count
+            return [str(start + i) for i in range(count)]
+
+        sections = []
         cat_idx = set()
-        row_counter = 0  # 全局行计数，用于交替背景色
         for i, cat in enumerate(self.category_list):
-            tag = f"tag_{cat['color']}"
-            self.tree.tag_configure(tag, foreground=cat['color'], font=("", self.current_font_size, "bold"))
-            pid = self.tree.insert("", "end", text=f"📂 {cat['name']}", open=True, tags=(tag,))
             # 圈选分类优先按画圈轨迹顺序显示；旧数据或普通分类按 Order / 索引显示。
             if cat.get('ordered_indices'):
                 sorted_indices = [
@@ -1779,19 +1807,12 @@ class OCRApp:
                 sorted_indices = sorted(list(cat['indices']), key=lambda x: self.df.loc[x, 'Order'] if x in self.df.index else float('inf'))
             else:
                 sorted_indices = sorted(list(cat['indices']))
-            
-            for idx in sorted_indices:
-                m = idx in self.marked_indices
-                label_text = self.df.loc[idx, 'Label']
-                group = self.df.loc[idx, 'Group'] if 'Group' in self.df.columns else self.get_group_by_text_color(label_text)
-                
-                item_tags = self.get_item_tags(label_text, group, m)
-                item_tags.append('row_even' if row_counter % 2 == 0 else 'row_odd')
-                row_counter += 1
-                
-                self.tree.insert(pid, "end", values=(label_text, "☑" if group == 'C' else "☐", group, idx),
-                                 tags=tuple(item_tags))
-                cat_idx.add(idx)
+
+            rows = [idx for idx in sorted_indices if idx in self.df.index]
+            if rows:
+                sections.append({'key': cat['name'], 'indices': rows})
+                cat_idx.update(rows)
+
         rem_df = self.df.drop(list(cat_idx))
         if not rem_df.empty:
             t_sorted = sorted(self.thresholds)
@@ -1806,23 +1827,34 @@ class OCRApp:
                 line_cats.append((f"高于 {t_sorted[-1]}", rem_df[rem_df['Y'] >= t_sorted[-1]]))
             for name, sub in line_cats:
                 if sub.empty: continue
-                pid = self.tree.insert("", "end", text=f"📂 {self.custom_cat_names.get(name, name)}", open=True)
+                display_name = self.custom_cat_names.get(name, name)
                 if 'Order' in sub.columns:
                     sub_sorted = sub.sort_values('Order')
                 else:
                     sub_sorted = sub
-                
-                for r_idx, r in sub_sorted.iterrows():
-                    m = r_idx in self.marked_indices
-                    label_text = r['Label']
-                    group = r.get('Group', self.get_group_by_text_color(label_text))
-                    
-                    item_tags = self.get_item_tags(label_text, group, m)
-                    item_tags.append('row_even' if row_counter % 2 == 0 else 'row_odd')
-                    row_counter += 1
-                    
-                    self.tree.insert(pid, "end", values=(label_text, "☑" if group == 'C' else "☐", group, r_idx),
-                                     tags=tuple(item_tags))
+
+                rows = [r_idx for r_idx, _ in sub_sorted.iterrows()]
+                if rows:
+                    sections.append({'key': display_name, 'indices': rows})
+
+        row_counter = 0  # 全局行计数，用于交替背景色
+        category_labels = auto_category_labels(len(sections))
+        for section, category_label in zip(sections, category_labels):
+            category_key = section['key']
+            for idx in section['indices']:
+                if idx not in self.df.index:
+                    continue
+                m = idx in self.marked_indices
+                label_text = self.df.loc[idx, 'Label']
+                group = self.df.loc[idx, 'Group'] if 'Group' in self.df.columns else self.get_group_by_text_color(label_text)
+
+                item_tags = self.get_item_tags(label_text, group, m)
+                item_tags.append('row_even' if row_counter % 2 == 0 else 'row_odd')
+                row_counter += 1
+
+                self.tree.insert("", "end",
+                                 values=(label_text, "☑" if group == 'C' else "☐", group, idx, category_label, category_key),
+                                 tags=tuple(item_tags))
         self.restore_tree_state(tree_state)
         self.generate_report_from_tree()
 
@@ -1831,10 +1863,6 @@ class OCRApp:
         state = {'open_categories': {}, 'selected_indices': [], 'focus_index': None, 'yview': None}
         try:
             state['yview'] = self.tree.yview()
-            for category_iid in self.tree.get_children(""):
-                category_name = self.tree.item(category_iid, "text").replace("📂 ", "")
-                state['open_categories'][category_name] = self.tree.item(category_iid, "open")
-
             for iid in self.tree.selection():
                 values = self.tree.item(iid, 'values')
                 if values and len(values) > 3:
@@ -1855,15 +1883,10 @@ class OCRApp:
             return
         try:
             index_to_iid = {}
-            for category_iid in self.tree.get_children(""):
-                category_name = self.tree.item(category_iid, "text").replace("📂 ", "")
-                if category_name in state.get('open_categories', {}):
-                    self.tree.item(category_iid, open=state['open_categories'][category_name])
-
-                for child_iid in self.tree.get_children(category_iid):
-                    values = self.tree.item(child_iid, 'values')
-                    if values and len(values) > 3:
-                        index_to_iid[int(values[3])] = child_iid
+            for iid in self.tree.get_children(""):
+                values = self.tree.item(iid, 'values')
+                if values and len(values) > 3:
+                    index_to_iid[int(values[3])] = iid
 
             selected_iids = [
                 index_to_iid[idx]
@@ -1976,6 +1999,35 @@ class OCRApp:
         
         return item_tags
 
+    def is_tree_data_item(self, iid):
+        """Return True for table rows that represent data items."""
+        if not iid or not self.tree.exists(iid):
+            return False
+        values = self.tree.item(iid, 'values')
+        return bool(values and len(values) > 3)
+
+    def get_tree_item_category(self, iid):
+        """Read the displayed category text from the first table column."""
+        values = self.tree.item(iid, 'values')
+        if values and len(values) > 4:
+            return str(values[4]).strip()
+        return str(self.tree.item(iid, 'text')).replace("📂 ", "").strip()
+
+    def get_tree_item_category_key(self, iid):
+        """Read the hidden stable category key used by internal logic."""
+        values = self.tree.item(iid, 'values')
+        if values and len(values) > 5:
+            return str(values[5]).strip()
+        return self.get_tree_item_category(iid)
+
+    def set_tree_row_values(self, iid, label_text, status, group_value, idx, category=None, category_key=None):
+        """Write row values while keeping the existing category cell."""
+        if category is None:
+            category = self.get_tree_item_category(iid) if self.tree.exists(iid) else ""
+        if category_key is None:
+            category_key = self.get_tree_item_category_key(iid) if self.tree.exists(iid) else category
+        self.tree.item(iid, values=(label_text, status, group_value, idx, category, category_key))
+
     def update_tree_item_in_place(self, iid, label_text=None, group_value=None):
         """Update one data row in the tree without rebuilding or reordering siblings."""
         values = self.tree.item(iid, 'values')
@@ -1989,7 +2041,7 @@ class OCRApp:
         group_value = current_group if group_value is None else group_value
 
         new_status = "☑" if group_value == 'C' else "☐"
-        self.tree.item(iid, values=(label_text, new_status, group_value, idx))
+        self.set_tree_row_values(iid, label_text, new_status, group_value, idx)
 
         item_tags = self.get_item_tags(label_text, group_value, idx in self.marked_indices)
         row_tags = [tag for tag in self.tree.item(iid, 'tags') if tag in ('row_even', 'row_odd')]
@@ -1998,8 +2050,12 @@ class OCRApp:
         return True
 
     def rename_category_in_place(self, iid, old_name, new_name):
-        """Rename a category node without rebuilding the tree."""
-        self.tree.item(iid, text=f"📂 {new_name}")
+        """Rename a category in the table without rebuilding or reordering rows."""
+        for row_iid in self.tree.get_children(""):
+            if self.get_tree_item_category(row_iid) == old_name:
+                values = self.tree.item(row_iid, 'values')
+                if values and len(values) > 3:
+                    self.set_tree_row_values(row_iid, values[0], values[1], values[2], values[3], new_name)
 
         renamed = False
         for cat in self.category_list:
@@ -2066,34 +2122,52 @@ class OCRApp:
             self.separator_btn.config(text="分隔: ----")
         self.generate_report_from_tree()
 
+    def toggle_report_format(self):
+        """切换文本报告格式。"""
+        if self.report_format == 'columns':
+            self.report_format = 'legacy'
+            self.report_format_btn.config(text="格式: 旧版")
+        else:
+            self.report_format = 'columns'
+            self.report_format_btn.config(text="格式: 三列")
+        self.generate_report_from_tree()
+
     def generate_report_from_tree(self):
-        """从树生成报告 - 根据组值和红色文字添加分隔"""
+        """从表格生成报告 - 根据分类、组值和红色文字添加分隔"""
         self.report_text.delete("1.0", tk.END)
         content = ""
         separator = "----\n" if self.report_separator == 'line' else "\n"
 
-        for pid in self.tree.get_children(""):
-            title = self.tree.item(pid, "text").replace("📂 ", "")
-            children = self.tree.get_children(pid)
-            if not children:
+        sections = []
+        current_title = None
+        current_items = []
+        for iid in self.tree.get_children(""):
+            vals = self.tree.item(iid, "values")
+            if len(vals) < 4:
                 continue
+            title = self.get_tree_item_category(iid)
+            if title != current_title:
+                if current_items:
+                    sections.append((current_title, current_items))
+                current_title = title
+                current_items = []
+            current_items.append({
+                'category': title,
+                'name': vals[0],
+                'group': vals[2],
+                'is_red': self.is_text_red_color(vals[0])
+            })
+        if current_items:
+            sections.append((current_title, current_items))
 
-            content += f"【{title}】:\n"
-
-            items_data = []
-            for cid in children:
-                vals = self.tree.item(cid, "values")
-                if len(vals) >= 4:
-                    name = vals[0]
-                    group = vals[2]
-                    idx = int(vals[3])
-                    is_red = self.is_text_red_color(name)
-                    items_data.append({'name': name, 'group': group, 'is_red': is_red})
+        for title, items_data in sections:
+            if self.report_format == 'columns':
+                content += f"【{title}】:\n"
 
             prev_group = None
             prev_is_red = None
-
             for i, item in enumerate(items_data):
+                category = item['category']
                 name = item['name']
                 group = item['group']
                 is_red = item['is_red']
@@ -2102,13 +2176,15 @@ class OCRApp:
                     if (prev_group is not None and prev_group != group) or (prev_is_red and is_red):
                         content += separator
 
-                # 处理 ~ 前缀：每个 ~ 代表一个空行，输出后去掉前缀
                 leading_tildes = len(name) - len(name.lstrip('~'))
                 if leading_tildes > 0:
                     content += "\n" * leading_tildes
                     name = name[leading_tildes:]
 
-                content += f"{name}\n"
+                if self.report_format == 'legacy':
+                    content += f"{name}\n"
+                else:
+                    content += f"{category}\t{name}\t{group}\n"
                 prev_group = group
                 prev_is_red = is_red
 
@@ -2154,59 +2230,51 @@ class OCRApp:
 
         context_menu = tk.Menu(self.root, tearoff=0)
 
-        if self.tree.parent(iid):
-            # === 数据项菜单 ===
-            current_group = self._get_group_from_values(self.tree.item(iid, 'values'))
-            item_name = self.tree.item(iid, 'values')[0] if self.tree.item(iid, 'values') else ''
-            selected = [i for i in self.tree.selection() if self.tree.parent(i)]
-            selected_count = len(selected)
+        if not self.is_tree_data_item(iid):
+            return
 
-            # 组值快速切换（当前组用 ● 标记）
-            group_menu = tk.Menu(context_menu, tearoff=0)
-            for g in ['A', 'B', 'C', 'D']:
-                label = f"● {g}（当前）" if g == current_group else f"   {g}"
-                group_menu.add_command(
-                    label=label,
-                    command=lambda grp=g, clicked=iid: self.set_selected_group_value(clicked, grp)
-                )
-            if selected_count > 1:
-                context_menu.add_cascade(label=f"🏷 改组选中 {selected_count} 项", menu=group_menu)
-            else:
-                context_menu.add_cascade(label=f"🏷 改组（当前：{current_group}）", menu=group_menu)
-            context_menu.add_separator()
+        current_group = self._get_group_from_values(self.tree.item(iid, 'values'))
+        selected = [i for i in self.tree.selection() if self.is_tree_data_item(i)]
+        selected_count = len(selected)
+        category_name = self.get_tree_item_category(iid)
 
-            context_menu.add_command(label="⬆️ 上移一行", command=self.move_item_up)
-            context_menu.add_command(label="⬇️ 下移一行", command=self.move_item_down)
-            context_menu.add_separator()
-            context_menu.add_command(label="✂️ 拆分A组（全部）", command=self.split_group_a_items)
-            context_menu.add_separator()
-            context_menu.add_command(label="➕ 新增", command=self.open_add_data_dialog)
-            context_menu.add_command(label="❌ 删除", command=self.delete_selected_data)
-
-            # 选中两行时显示合并选项
-            if len(selected) == 2:
-                context_menu.add_separator()
-                context_menu.add_command(label="🔗 合并选中两行", command=self.merge_selected_items)
-
+        group_menu = tk.Menu(context_menu, tearoff=0)
+        for g in ['A', 'B', 'C', 'D']:
+            label = f"● {g}（当前）" if g == current_group else f"   {g}"
+            group_menu.add_command(
+                label=label,
+                command=lambda grp=g, clicked=iid: self.set_selected_group_value(clicked, grp)
+            )
+        if selected_count > 1:
+            context_menu.add_cascade(label=f"🏷 改组选中 {selected_count} 项", menu=group_menu)
         else:
-            # === 分类目录菜单 ===
-            category_name = self.tree.item(iid, "text").replace("📂 ", "")
-            context_menu.add_command(label=f"✏️ 重命名：{category_name}",
-                                     command=lambda: self.rename_category(iid))
+            context_menu.add_cascade(label=f"🏷 改组（当前：{current_group}）", menu=group_menu)
+        context_menu.add_separator()
+
+        category_menu = tk.Menu(context_menu, tearoff=0)
+        for g in ['A', 'B', 'C', 'D']:
+            category_menu.add_command(
+                label=f"改为 {g}",
+                command=lambda grp=g, clicked=iid: self.set_selected_group_value(clicked, grp)
+            )
+        context_menu.add_command(label=f"✏️ 重命名分类「{category_name}」",
+                                 command=lambda row=iid: self.rename_category(row))
+        context_menu.add_cascade(label=f"批量修改选中条目组值（{selected_count}项）", menu=category_menu)
+        context_menu.add_command(label=f"📊 查看「{category_name}」统计",
+                                 command=lambda cat=category_name: self.show_category_stats(cat))
+        context_menu.add_separator()
+
+        context_menu.add_command(label="⬆️ 上移一行", command=self.move_item_up)
+        context_menu.add_command(label="⬇️ 下移一行", command=self.move_item_down)
+        context_menu.add_separator()
+        context_menu.add_command(label="✂️ 拆分A组（全部）", command=self.split_group_a_items)
+        context_menu.add_separator()
+        context_menu.add_command(label="➕ 新增", command=self.open_add_data_dialog)
+        context_menu.add_command(label="❌ 删除", command=self.delete_selected_data)
+
+        if len(selected) == 2:
             context_menu.add_separator()
-            context_menu.add_command(label="🔄 批量改组为 A",
-                                     command=lambda: self.batch_set_category_group(iid, 'A'))
-            context_menu.add_command(label="🔄 批量改组为 B",
-                                     command=lambda: self.batch_set_category_group(iid, 'B'))
-            context_menu.add_command(label="🔄 批量改组为 C",
-                                     command=lambda: self.batch_set_category_group(iid, 'C'))
-            context_menu.add_command(label="批量改组为 D",
-                                     command=lambda: self.batch_set_category_group(iid, 'D'))
-            context_menu.add_separator()
-            context_menu.add_command(label="📊 查看统计",
-                                     command=lambda: self.show_category_stats(iid))
-            context_menu.add_command(label="🎨 更改颜色",
-                                     command=lambda: self.change_category_color(iid))
+            context_menu.add_command(label="🔗 合并选中两行", command=self.merge_selected_items)
 
         try:
             context_menu.tk_popup(event.x_root, event.y_root)
@@ -2216,11 +2284,11 @@ class OCRApp:
     def batch_set_category_group(self, category_iid, target_group):
         """批量将分类下所有数据项的组值设为指定组"""
         try:
-            # 获取分类名称
-            category_name = self.tree.item(category_iid, "text").replace("📂 ", "")
-            
-            # 获取该分类下的所有数据项
-            children = self.tree.get_children(category_iid)
+            category_name = self.get_tree_item_category(category_iid) if self.tree.exists(str(category_iid)) else str(category_iid)
+            children = [
+                iid for iid in self.tree.get_children("")
+                if self.is_tree_data_item(iid) and self.get_tree_item_category(iid) == category_name
+            ]
             if not children:
                 messagebox.showinfo("提示", f"分类「{category_name}」下没有数据项！")
                 return
@@ -2298,7 +2366,7 @@ class OCRApp:
     def set_selected_group_value(self, clicked_iid, group_value):
         """将当前选中的数据项改为指定组；未多选时只改右键点击项。"""
         try:
-            selected = [i for i in self.tree.selection() if self.tree.exists(i) and self.tree.parent(i)]
+            selected = [i for i in self.tree.selection() if self.is_tree_data_item(i)]
             target_items = selected if clicked_iid in selected else [clicked_iid]
             undo_snapshot = self._create_classifier_snapshot()
             changed_count = 0
@@ -2418,7 +2486,7 @@ class OCRApp:
             
             # 如果有多个选中项，添加批量修改选项
             selected_items = self.tree.selection()
-            data_items = [item for item in selected_items if self.tree.parent(item)]
+            data_items = [item for item in selected_items if self.is_tree_data_item(item)]
             
             if len(data_items) > 1:
                 context_menu.add_command(
@@ -2470,16 +2538,15 @@ class OCRApp:
         if iid:
             self.tree.selection_set(iid)
 
-            if self.tree.parent(iid):
+            if self.is_tree_data_item(iid):
                 if column == '#1':
                     self.start_inline_edit(iid, column)
                     return "break"
-                elif column == '#2':
-                    self.toggle_c_group(iid)
-                    return "break"
-            else:
-                if column == '#0':
+                if column == '#2':
                     self.start_inline_edit(iid, column)
+                    return "break"
+                elif column == '#3':
+                    self.toggle_c_group(iid)
                     return "break"
 
     def on_long_press_start(self, event):
@@ -2503,10 +2570,7 @@ class OCRApp:
         column = self._long_press_col
         if not iid or not self.tree.exists(iid):
             return
-        if self.tree.parent(iid) and column == '#1':
-            self.tree.selection_set(iid)
-            self.start_inline_edit(iid, column)
-        elif not self.tree.parent(iid) and column == '#0':
+        if self.is_tree_data_item(iid) and column in ('#1', '#2'):
             self.tree.selection_set(iid)
             self.start_inline_edit(iid, column)
     
@@ -2525,12 +2589,12 @@ class OCRApp:
             x, y, width, height = bbox
             
             # 获取当前值
-            if column == '#0':
-                # 分类目录列
-                current_value = self.tree.item(iid, "text").replace("📂 ", "")
+            if column == '#1':
+                # 分类列
+                current_value = self.get_tree_item_category(iid)
                 edit_type = 'category'
                 editor_widget = 'entry'
-            elif column == '#1':
+            elif column == '#2':
                 # 名称列
                 values = self.tree.item(iid, 'values')
                 if not values:
@@ -2538,7 +2602,7 @@ class OCRApp:
                 current_value = values[0]
                 edit_type = 'item_name'
                 editor_widget = 'entry'
-            elif column == '#3':
+            elif column == '#4':
                 # 组列
                 values = self.tree.item(iid, 'values')
                 if not values or len(values) < 3:
@@ -2839,7 +2903,7 @@ class OCRApp:
         modified = False
         for iid in selected_items:
             # Check if item exists before accessing
-            if self.tree.exists(iid) and self.tree.parent(iid):
+            if self.is_tree_data_item(iid):
                 values = self.tree.item(iid, 'values')
                 if values and len(values) > 3:
                     idx = int(values[3])
@@ -2863,7 +2927,7 @@ class OCRApp:
         # 过滤出数据项（排除分类目录）
         data_items = []
         for iid in selected_items:
-            if self.tree.exists(iid) and self.tree.parent(iid):
+            if self.is_tree_data_item(iid):
                 values = self.tree.item(iid, 'values')
                 if values and len(values) > 3:
                     data_items.append({
@@ -3003,7 +3067,7 @@ class OCRApp:
     def rename_category(self, iid):
         """重命名分类目录"""
         try:
-            old_name = self.tree.item(iid, "text").replace("📂 ", "")
+            old_name = self.get_tree_item_category(iid)
             
             new_name = simpledialog.askstring(
                 "重命名分类", 
@@ -3043,8 +3107,11 @@ class OCRApp:
     def show_category_stats(self, iid):
         """显示分类统计信息"""
         try:
-            category_name = self.tree.item(iid, "text").replace("📂 ", "")
-            children = self.tree.get_children(iid)
+            category_name = self.get_tree_item_category(iid) if self.tree.exists(str(iid)) else str(iid)
+            children = [
+                row_iid for row_iid in self.tree.get_children("")
+                if self.is_tree_data_item(row_iid) and self.get_tree_item_category(row_iid) == category_name
+            ]
             
             if not children:
                 messagebox.showinfo("统计信息", f"分类「{category_name}」\n\n暂无数据项")
@@ -3078,8 +3145,8 @@ class OCRApp:
     def change_category_color(self, iid):
         """更改分类颜色"""
         try:
-            category_name = self.tree.item(iid, "text").replace("📂 ", "")
-            idx = self.tree.get_children("").index(iid)
+            category_name = self.get_tree_item_category(iid) if self.tree.exists(str(iid)) else str(iid)
+            idx = next((i for i, cat in enumerate(self.category_list) if cat.get('name') == category_name), -1)
             
             if idx < len(self.category_list):
                 current_color = self.category_list[idx]['color']
@@ -3171,15 +3238,13 @@ class OCRApp:
 
     def merge_selected_items(self):
         """合并选中的两行为一行，文字用空格连接，组值取第一行"""
-        selected = [i for i in self.tree.selection() if self.tree.parent(i)]
+        selected = [i for i in self.tree.selection() if self.is_tree_data_item(i)]
         if len(selected) != 2:
             messagebox.showwarning("提示", "请选中恰好两行再合并")
             return
 
         # 按树中显示顺序排序（谁在上面谁是第一个）
-        all_items = []
-        for cat in self.tree.get_children(""):
-            all_items.extend(self.tree.get_children(cat))
+        all_items = list(self.tree.get_children(""))
         selected.sort(key=lambda x: all_items.index(x) if x in all_items else 0)
 
         v1 = self.tree.item(selected[0], 'values')
@@ -3197,10 +3262,11 @@ class OCRApp:
 
         # 直接更新树：第一行改文字，第二行删除
         new_status = "☑" if group1 == 'C' else "☐"
-        self.tree.item(selected[0], values=(merged_label, new_status, group1, idx1))
+        self.set_tree_row_values(selected[0], merged_label, new_status, group1, idx1)
         item_tags = self.get_item_tags(merged_label, group1, idx1 in self.marked_indices)
         self.tree.item(selected[0], tags=tuple(item_tags))
         self.tree.delete(selected[1])
+        self._shift_tree_indices_after_delete([idx2])
 
         # 焦点落在第一行
         self.tree.selection_set(selected[0])
@@ -3231,7 +3297,7 @@ class OCRApp:
         items = self.tree.selection()
         # 只处理数据项（有父节点的），记录 iid 和 df 索引
         item_pairs = [(i, int(self.tree.item(i, 'values')[3]))
-                      for i in items if self.tree.parent(i)]
+                      for i in items if self.is_tree_data_item(i)]
         if not item_pairs:
             return
         indices = [idx for _, idx in item_pairs]
@@ -3246,6 +3312,7 @@ class OCRApp:
         for iid, _ in item_pairs:
             if self.tree.exists(iid):
                 self.tree.delete(iid)
+        self._shift_tree_indices_after_delete(indices)
 
         # 删除前先用偏移计算更新 ordered_indices（此时索引还未变）
         self._shift_category_indices_after_delete(indices)
@@ -3337,68 +3404,26 @@ class OCRApp:
             return 0
 
     def apply_corrections(self):
-        """统一执行常用修正：加空格、拆分A组、清理规则。一次性汇报结果，不弹多个窗口。"""
+        """执行拆分A组。"""
         if self.df.empty:
             messagebox.showwarning("提示", "没有数据可以处理！")
             return
 
         undo_snapshot = self._create_classifier_snapshot()
 
-        # 确保 LassoTag 列存在且无 NaN
-        if 'LassoTag' not in self.df.columns:
-            self.df['LassoTag'] = ''
-        self.df['LassoTag'] = self.df['LassoTag'].fillna('')
-
-        # --- 加空格 ---
-        space_modified = self.add_spaces_to_tree_items(silent=True)
-
-        # --- 清理规则 ---
-        filter_changed, filter_removed = self._apply_filter_rules_silent()
-
-        # --- 拆分 A 组 ---
         split_count = self._split_group_a_silent()
-
-        # 修正后用 LassoTag 重建 category_list 的索引
-        if self.category_list and not self.df.empty:
-            for cat in self.category_list:
-                tag = cat['name']
-                matched = self.df.index[self.df['LassoTag'] == tag].tolist()
-                matched_set = set(matched)
-                # 保持 ordered_indices 的相对顺序，只保留仍存在的
-                if cat.get('ordered_indices') is not None:
-                    cat['ordered_indices'] = [i for i in cat['ordered_indices'] if i in matched_set]
-                    # 补上新出现的（理论上圈选不会新增，但防御性处理）
-                    for i in matched:
-                        if i not in matched_set:
-                            cat['ordered_indices'].append(i)
-                cat['indices'] = matched_set
-
-        # 统一刷新一次（保留圈选分类，只清标记）
-        self.marked_indices = set()
         self.refresh_all()
 
-        # 汇总结果
-        parts = []
-        if space_modified:
-            parts.append(f"加空格：修改 {space_modified} 行")
         if split_count:
-            parts.append(f"拆分A组：{split_count} 个项目")
-        if filter_changed:
-            msg = f"清理规则：修改 {filter_changed} 行"
-            if filter_removed:
-                msg += f"（删除空行 {filter_removed} 个）"
-            parts.append(msg)
-
-        if parts:
-            undo_snapshot['action_name'] = "修正 — " + " | ".join(parts)
+            undo_snapshot['action_name'] = f"拆分A组：{split_count} 个项目"
             self.undo_stack.append(undo_snapshot)
             if len(self.undo_stack) > self.undo_limit:
                 self.undo_stack.pop(0)
             self.update_undo_button_state()
-            self.show_temp_message("✓ 修正完成：" + " | ".join(parts))
-            messagebox.showinfo("修正完成", "\n".join(parts))
+            self.show_temp_message(f"✓ 已拆分A组：{split_count} 个项目")
+            messagebox.showinfo("拆分完成", f"已拆分A组：{split_count} 个项目")
         else:
-            self.show_temp_message("✓ 修正完成，无需修改")
+            self.show_temp_message("✓ 没有需要拆分的A组项目")
     
     def show_space_rules_dialog(self):
         """显示空格规则选择对话框"""
@@ -4142,42 +4167,11 @@ class OCRApp:
                 messagebox.showerror("导出失败", f"导出文件时出错：{str(e)}")
 
     def export_excel_file(self):
-        """导出分类目录树内容为 Excel，同一分类目录下相同组的条目合并到一个单元格。"""
+        """导出 Excel：按文本报告列导出辈分、内容和组。"""
         try:
-            rows = []
-            if hasattr(self, 'tree'):
-                for pid in self.tree.get_children(""):
-                    category = str(self.tree.item(pid, "text")).replace("📂", "").strip()
-                    # 按顺序收集条目，相邻且同组的合并
-                    current_group = None
-                    current_labels = []
-
-                    def flush():
-                        if current_labels:
-                            rows.append({
-                                "分类目录": category,
-                                "名称": "\n".join(current_labels),
-                                "组": current_group
-                            })
-
-                    for cid in self.tree.get_children(pid):
-                        vals = self.tree.item(cid, "values")
-                        if not vals or len(vals) < 3:
-                            continue
-                        label = str(vals[0]).strip()
-                        group = self._get_group_from_values(vals)
-                        if not label:
-                            continue
-                        if group == current_group:
-                            current_labels.append(label)
-                        else:
-                            flush()
-                            current_group = group
-                            current_labels = [label]
-                    flush()
-
-            if not rows:
-                messagebox.showwarning("提示", "没有内容可以导出！")
+            raw = self.report_text.get("1.0", tk.END)
+            if not raw.strip():
+                messagebox.showwarning("提示", "没有文本报告内容可以导出！")
                 return
 
             path = filedialog.asksaveasfilename(
@@ -4188,20 +4182,57 @@ class OCRApp:
             if not path:
                 return
 
-            df_export = pd.DataFrame(rows, columns=["分类目录", "名称", "组"])
+            rows = []
+            title_pattern = re.compile(r'^【.*】[:：]?$')
+            for line in raw.splitlines():
+                stripped = line.strip()
+                if not stripped or stripped == "----":
+                    continue
+                if title_pattern.match(stripped):
+                    continue
+                parts = line.split("\t", 2)
+                if len(parts) == 3 and parts[2].strip() in ['A', 'B', 'C', 'D']:
+                    rows.append({
+                        "辈分": parts[0].strip(),
+                        "内容": parts[1].strip(),
+                        "组": parts[2].strip()
+                    })
+
+            if not rows:
+                messagebox.showwarning("提示", "没有可导出的文本报告数据！")
+                return
+
+            merged_rows = []
+            current_row = None
+            for row in rows:
+                if (
+                    current_row
+                    and current_row["辈分"] == row["辈分"]
+                    and current_row["组"] == row["组"]
+                ):
+                    current_row["内容"] += f"\n{row['内容']}"
+                else:
+                    if current_row:
+                        merged_rows.append(current_row)
+                    current_row = row.copy()
+            if current_row:
+                merged_rows.append(current_row)
+
+            df_export = pd.DataFrame(merged_rows, columns=["辈分", "内容", "组"])
             with pd.ExcelWriter(path, engine="openpyxl") as writer:
                 df_export.to_excel(writer, index=False)
                 ws = writer.sheets["Sheet1"]
-                from openpyxl.styles import Alignment
-                for row_cells in ws.iter_rows(min_row=2):
+                from openpyxl.styles import Alignment, Font
+                for cell in ws[1]:
+                    cell.font = Font(bold=True)
+                for row_cells in ws.iter_rows():
                     for cell in row_cells:
                         cell.alignment = Alignment(wrap_text=True, vertical="top")
-                for col in ws.columns:
-                    max_len = 0
-                    for cell in col:
-                        for line in str(cell.value or '').split('\n'):
-                            max_len = max(max_len, len(line))
-                    ws.column_dimensions[col[0].column_letter].width = min(max_len + 4, 60)
+                widths = {"A": 12, "B": 60, "C": 10}
+                for col, width in widths.items():
+                    ws.column_dimensions[col].width = width
+
+            self.save_export_record(path, raw.strip())
             messagebox.showinfo("导出成功", f"Excel 已导出：\n{path}")
 
         except ImportError:
@@ -6697,10 +6728,32 @@ class OCRApp:
     
     def on_closing(self):
         """窗口关闭时的处理"""
-        # 保存窗口配置
-        self.save_window_config()
-        # 关闭窗口
-        self.root.destroy()
+        try:
+            self.save_window_config()
+        except Exception as e:
+            print(f"保存窗口配置失败: {e}")
+
+        try:
+            for after_id in self.root.tk.call('after', 'info'):
+                self.root.after_cancel(after_id)
+        except Exception:
+            pass
+
+        try:
+            if _matplotlib_loaded and plt is not None:
+                plt.close('all')
+        except Exception:
+            pass
+
+        try:
+            self.root.quit()
+        except Exception:
+            pass
+
+        try:
+            self.root.destroy()
+        except Exception:
+            pass
     
     def load_history_limit(self):
         """加载历史记录数量限制"""
