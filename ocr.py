@@ -13,6 +13,7 @@ import pandas as pd
 import re
 import random
 import copy
+import hashlib
 
 plt = None
 FigureCanvasTkAgg = None
@@ -293,6 +294,7 @@ class DataStore:
             'stats': {},
             'history': [],
             'history_limit': 100,
+            'ocr_cache': {},
             'size_limits': {},
             'font_config': {'font_size': 11},
             'popup_windows': {}
@@ -518,7 +520,7 @@ class OCRApp:
         
         # === 结果操作组 ===
         result_group = self._create_ribbon_group(ribbon_content, "结果操作")
-        self.copy_btn = self._create_ribbon_button(result_group, "📋\n复制", self.copy_text, 
+        self.copy_btn = self._create_ribbon_button(result_group, "📋\n复制解析", self.copy_and_parse_text,
                                                     "#607D8B", state=tk.DISABLED)
         self.add_zeros_btn = self._create_ribbon_button(result_group, "➕\n加|0|0", self.add_zeros_to_lines, 
                                                          "#9C27B0", state=tk.DISABLED)
@@ -2097,20 +2099,83 @@ class OCRApp:
 
     def _is_red_color(self, color_str):
         """判断颜色是否为红色（精确匹配）"""
-        c = color_str.strip().upper()
+        c = str(color_str or '').strip().upper()
         # 精确匹配常见红色值
         red_colors = {'#FF0000', '#FF0000FF', 'RED', '#F00', '#CC0000', '#DC143C', '#B22222', '#8B0000'}
         return c in red_colors
 
     def is_text_red_color(self, text):
         """判断文字是否为红色"""
+        text = str(text or '').strip()
         for prefix, style in self.font_style_rules.items():
             if not style.get('enabled', True):
                 continue
             if text.lower().startswith(prefix.lower()):
                 if self._is_red_color(style.get('color', '#000000')):
                     return True
+
+        color_config = self.store.get('color_config', {}) if hasattr(self, 'store') else {}
+        text_colors = color_config.get('text_colors', {}) if isinstance(color_config, dict) else {}
+        if self._is_red_color(text_colors.get(text)):
+            return True
         return False
+
+    def is_tree_name_cell_red(self, iid, label_text):
+        """判断表格名称列当前显示是否为红色。"""
+        if self.is_text_red_color(label_text):
+            return True
+
+        try:
+            for tag in self.tree.item(iid, 'tags'):
+                foreground = self.tree.tag_configure(tag, 'foreground')
+                if self._is_red_color(foreground):
+                    return True
+        except Exception:
+            pass
+
+        return False
+
+    def find_red_name_non_a_rows(self):
+        """查找名称列为红色但组值不是A的数据行。"""
+        issues = []
+        if not hasattr(self, 'tree'):
+            return issues
+
+        for iid in self.tree.get_children(""):
+            if not self.is_tree_data_item(iid):
+                continue
+            values = self.tree.item(iid, 'values')
+            if not values or len(values) < 4:
+                continue
+
+            label_text = str(values[0]).strip()
+            group_value = self._get_group_from_values(values)
+            if label_text and self.is_tree_name_cell_red(iid, label_text) and group_value != 'A':
+                issues.append({
+                    'category': self.get_tree_item_category(iid),
+                    'name': label_text,
+                    'group': group_value,
+                })
+        return issues
+
+    def confirm_export_with_red_name_group_issues(self):
+        """导出Excel前提示红色名称未归入A组的行。"""
+        issues = self.find_red_name_non_a_rows()
+        if not issues:
+            return True
+
+        preview_lines = []
+        for item in issues[:12]:
+            preview_lines.append(f"分类：{item['category']}  名称：{item['name']}  当前组：{item['group']}")
+        if len(issues) > 12:
+            preview_lines.append(f"... 还有 {len(issues) - 12} 行")
+
+        message = (
+            f"发现 {len(issues)} 行名称列为红色，但组不是 A：\n\n"
+            + "\n".join(preview_lines)
+            + "\n\n是否仍然继续导出 Excel？"
+        )
+        return messagebox.askyesno("导出前检查", message, icon='warning')
 
     def toggle_report_separator(self):
         """切换报告分隔方式"""
@@ -2709,7 +2774,8 @@ class OCRApp:
                 if values and len(values) > 3:
                     idx = int(values[3])
                     self.df.loc[idx, 'Label'] = new_value
-                    group = self._get_group_from_values(values)
+                    group = self.get_group_by_text_color(new_value)
+                    self.df.loc[idx, 'Group'] = group
                     self.update_tree_item_in_place(edit_info['iid'], label_text=new_value, group_value=group)
                     self.generate_report_from_tree()
                     self.show_temp_message(f"✓ 已更新：{new_value}")
@@ -3058,7 +3124,9 @@ class OCRApp:
                     # 更新DataFrame中的数据
                     self.push_undo_snapshot("编辑名称")
                     self.df.loc[idx, 'Label'] = new_name
-                    self.update_tree_item_in_place(iid, label_text=new_name, group_value=self._get_group_from_values(values))
+                    group = self.get_group_by_text_color(new_name)
+                    self.df.loc[idx, 'Group'] = group
+                    self.update_tree_item_in_place(iid, label_text=new_name, group_value=group)
                     self.generate_report_from_tree()
                     messagebox.showinfo("成功", f"名称已更新：\n{old_name} → {new_name}")
         except Exception as e:
@@ -4172,6 +4240,9 @@ class OCRApp:
             raw = self.report_text.get("1.0", tk.END)
             if not raw.strip():
                 messagebox.showwarning("提示", "没有文本报告内容可以导出！")
+                return
+
+            if not self.confirm_export_with_red_name_group_issues():
                 return
 
             path = filedialog.asksaveasfilename(
@@ -5955,7 +6026,70 @@ class OCRApp:
             self.general_ocr_btn.config(state=tk.NORMAL)
             self.progress_label.config(text="")
 
-    
+    def calculate_image_hash(self, image_path):
+        """Return a SHA-256 fingerprint for the original image bytes."""
+        sha256 = hashlib.sha256()
+        with open(image_path, "rb") as f:
+            for chunk in iter(lambda: f.read(1024 * 1024), b""):
+                sha256.update(chunk)
+        return sha256.hexdigest()
+
+    def _ocr_cache_key(self, image_hash, ocr_type):
+        return f"{ocr_type}:{image_hash}"
+
+    def get_cached_ocr_result(self, image_path, ocr_type):
+        try:
+            image_hash = self.calculate_image_hash(image_path)
+            cache = self.store.get('ocr_cache', {}) or {}
+            record = cache.get(self._ocr_cache_key(image_hash, ocr_type))
+            if not record:
+                return image_hash, None
+            return image_hash, {
+                'file': os.path.basename(image_path),
+                'path': image_path,
+                'lines': record.get('lines', []),
+                'count': len(record.get('lines', [])),
+                'cached': True,
+                'image_hash': image_hash,
+                'cached_from': record.get('file', '')
+            }
+        except Exception as e:
+            print(f"读取OCR缓存失败: {e}")
+            return None, None
+
+    def save_ocr_cache(self, image_hash, ocr_type, image_path, lines):
+        if not image_hash or not lines:
+            return
+        try:
+            cache = self.store.get('ocr_cache', {}) or {}
+            cache[self._ocr_cache_key(image_hash, ocr_type)] = {
+                'hash': image_hash,
+                'type': ocr_type,
+                'file': os.path.basename(image_path),
+                'path': image_path,
+                'lines': lines,
+                'line_count': len(lines),
+                'updated_at': datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            }
+            self.store.set('ocr_cache', cache)
+        except Exception as e:
+            print(f"保存OCR缓存失败: {e}")
+
+    def append_cached_ocr_result(self, image_path, cached_result):
+        cached_from = cached_result.get('cached_from') or cached_result.get('file', '')
+        if cached_from and cached_from != os.path.basename(image_path):
+            note = f"命中已识别图片缓存，复用结果（来源: {cached_from}）\n"
+        else:
+            note = "命中已识别图片缓存，复用结果\n"
+        self.root.after(0, lambda n=note: self.result_text.insert(tk.END, n))
+        recognized_text = "\n".join(cached_result.get('lines', []))
+        if recognized_text:
+            self.root.after(0, lambda t=recognized_text: self.result_text.insert(tk.END, t + "\n"))
+        self.all_results.append(cached_result)
+        self.root.after(0, lambda c=cached_result.get('count', 0):
+            self.result_text.insert(tk.END, f"\n缓存复用成功：{c} 行文字\n"))
+        self.root.after(0, lambda: self.result_text.see(tk.END))
+
     def perform_ocr(self):
         """执行 OCR 识别（支持批量）- 使用多线程避免卡顿"""
         if not self.image_paths:
@@ -6029,6 +6163,11 @@ class OCRApp:
                     self.root.after(0, lambda err=str(e): 
                         self.result_text.insert(tk.END, f"⚠️ 无法读取图片尺寸: {err}\n"))
                 
+                image_hash, cached_result = self.get_cached_ocr_result(image_path, 'accurate')
+                if cached_result:
+                    self.append_cached_ocr_result(image_path, cached_result)
+                    continue
+
                 result = ocr_image(image_path)
                 
                 if "words_result" in result:
@@ -6049,8 +6188,10 @@ class OCRApp:
                         'file': os.path.basename(image_path),
                         'path': image_path,
                         'lines': formatted_lines,
-                        'count': len(formatted_lines)
+                        'count': len(formatted_lines),
+                        'image_hash': image_hash
                     })
+                    self.save_ocr_cache(image_hash, 'accurate', image_path, formatted_lines)
                     
                     self.root.after(0, lambda c=len(formatted_lines): 
                         self.result_text.insert(tk.END, f"\n✓ 识别成功：{c} 行文字\n"))
@@ -6194,6 +6335,11 @@ class OCRApp:
                     self.root.after(0, lambda err=str(e): 
                         self.result_text.insert(tk.END, f"⚠️ 无法读取图片尺寸: {err}\n"))
                 
+                image_hash, cached_result = self.get_cached_ocr_result(image_path, 'general')
+                if cached_result:
+                    self.append_cached_ocr_result(image_path, cached_result)
+                    continue
+
                 result = ocr_image_general(image_path)
                 
                 if "words_result" in result:
@@ -6214,8 +6360,10 @@ class OCRApp:
                         'file': os.path.basename(image_path),
                         'path': image_path,
                         'lines': formatted_lines,
-                        'count': len(formatted_lines)
+                        'count': len(formatted_lines),
+                        'image_hash': image_hash
                     })
+                    self.save_ocr_cache(image_hash, 'general', image_path, formatted_lines)
                     
                     self.root.after(0, lambda c=len(formatted_lines): 
                         self.result_text.insert(tk.END, f"\n✓ 识别成功：{c} 行文字\n"))
@@ -6350,6 +6498,11 @@ class OCRApp:
                     self.root.after(0, lambda err=str(e): 
                         self.result_text.insert(tk.END, f"⚠️ 无法读取图片尺寸: {err}\n"))
                 
+                image_hash, cached_result = self.get_cached_ocr_result(image_path, 'basic')
+                if cached_result:
+                    self.append_cached_ocr_result(image_path, cached_result)
+                    continue
+
                 result = ocr_image_basic(image_path)
                 
                 if "words_result" in result:
@@ -6370,8 +6523,10 @@ class OCRApp:
                         'file': os.path.basename(image_path),
                         'path': image_path,
                         'lines': text_only_lines,
-                        'count': len(text_only_lines)
+                        'count': len(text_only_lines),
+                        'image_hash': image_hash
                     })
+                    self.save_ocr_cache(image_hash, 'basic', image_path, text_only_lines)
                     
                     self.root.after(0, lambda c=len(text_only_lines): 
                         self.result_text.insert(tk.END, f"\n✓ 识别成功：{c} 行文字\n"))
@@ -6473,6 +6628,32 @@ class OCRApp:
         
         except Exception as e:
             messagebox.showerror("错误", f"复制失败：{str(e)}")
+
+    def copy_and_parse_text(self):
+        """复制识别结果并直接解析到分类数据。"""
+        if not self.all_results:
+            messagebox.showwarning("警告", "没有可复制和解析的文字！")
+            return
+
+        try:
+            all_lines = []
+            for result in self.all_results:
+                all_lines.extend(result['lines'])
+
+            text_to_copy = "\n".join(all_lines)
+            self.root.clipboard_clear()
+            self.root.clipboard_append(text_to_copy)
+            self.root.update()
+
+            self.text_input.delete("1.0", tk.END)
+            self.text_input.insert(tk.END, text_to_copy)
+            self.load_from_text()
+
+            self.progress_label.config(
+                text=f"✓ 已复制并解析！{len(all_lines)}行 {len(text_to_copy)}字符")
+
+        except Exception as e:
+            messagebox.showerror("错误", f"复制并解析失败：{str(e)}")
     
     def add_zeros_to_lines(self):
         """在纯文字行后面添加|0|0（带位置信息的不改变）"""
@@ -6705,6 +6886,38 @@ class OCRApp:
         
         # 设置最小尺寸
         popup.minsize(default_width, default_height)
+
+        def fit_popup_to_content():
+            """内容创建完成后自动放大窗口，避免默认尺寸裁掉按钮或底部内容。"""
+            try:
+                popup.update_idletasks()
+                current = popup.geometry().split("+", 1)[0]
+                current_width, current_height = [int(v) for v in current.split("x")[:2]]
+                required_width = max(default_width, popup.winfo_reqwidth() + 24)
+                required_height = max(default_height, popup.winfo_reqheight() + 24)
+
+                screen_width = popup.winfo_screenwidth()
+                screen_height = popup.winfo_screenheight()
+                max_width = max(default_width, screen_width - 80)
+                max_height = max(default_height, screen_height - 120)
+                new_width = min(max(current_width, required_width), max_width)
+                new_height = min(max(current_height, required_height), max_height)
+
+                if new_width <= current_width and new_height <= current_height:
+                    popup.minsize(min(current_width, max_width), min(current_height, max_height))
+                    return
+
+                x = popup.winfo_x()
+                y = popup.winfo_y()
+                if x + new_width > screen_width - 20:
+                    x = max(20, screen_width - new_width - 20)
+                if y + new_height > screen_height - 60:
+                    y = max(20, screen_height - new_height - 60)
+
+                popup.geometry(f"{new_width}x{new_height}+{x}+{y}")
+                popup.minsize(new_width, new_height)
+            except Exception as e:
+                print(f"⚠️ 自动调整弹窗尺寸失败: {e}")
         
         # 绑定关闭事件，保存配置
         def on_popup_close():
@@ -6723,6 +6936,8 @@ class OCRApp:
                 popup._save_timer = popup.after(500, lambda: self.save_popup_config(window_name, popup))
         
         popup.bind('<Configure>', on_configure)
+        popup.after_idle(fit_popup_to_content)
+        popup.after(200, fit_popup_to_content)
         
         return popup
     
@@ -7111,35 +7326,34 @@ class OCRApp:
                   font=("Microsoft YaHei", 9), padx=10, pady=5,
                   cursor="hand2").pack(side=tk.LEFT)
 
-        def save_and_apply():
+        def collect_rules():
             rules = []
             for find_ent, rep_ent, _ in row_widgets:
                 f = find_ent.get()
                 r = rep_ent.get()
                 if f:
                     rules.append({'find': f, 'replace': r})
+            return rules
+
+        def save_and_apply():
+            rules = collect_rules()
             self.replace_rules = rules
             self.save_replace_config()
             self.show_temp_message("✓ 替换规则已保存")
             win.destroy()
+            self._run_replace_rules()
 
         def save_only():
-            rules = []
-            for find_ent, rep_ent, _ in row_widgets:
-                f = find_ent.get()
-                r = rep_ent.get()
-                if f:
-                    rules.append({'find': f, 'replace': r})
+            rules = collect_rules()
             self.replace_rules = rules
             self.save_replace_config()
             self.show_temp_message("✓ 替换规则已保存")
-            win.destroy()
 
-        tk.Button(btn_bar, text="保存并执行", command=save_and_apply,
+        tk.Button(btn_bar, text="应用", command=save_and_apply,
                   bg="#22C55E", fg="white", relief="flat",
                   font=("Microsoft YaHei", 9, "bold"), padx=10, pady=5,
                   cursor="hand2").pack(side=tk.RIGHT, padx=(6, 0))
-        tk.Button(btn_bar, text="仅保存", command=save_only,
+        tk.Button(btn_bar, text="保存", command=save_only,
                   bg="#2563EB", fg="white", relief="flat",
                   font=("Microsoft YaHei", 9), padx=10, pady=5,
                   cursor="hand2").pack(side=tk.RIGHT, padx=(6, 0))
@@ -7531,6 +7745,20 @@ class OCRApp:
         
         # 创建表格框架
         from tkinter import ttk
+
+        search_frame = tk.Frame(history_window)
+        search_frame.pack(fill=tk.X, padx=20, pady=(0, 8))
+        search_inner = tk.Frame(search_frame)
+        search_inner.pack(side=tk.RIGHT)
+        tk.Label(search_inner, text="搜索：", font=("Microsoft YaHei", 10)).pack(side=tk.LEFT)
+        search_var = tk.StringVar()
+        search_entry = tk.Entry(search_inner, textvariable=search_var, font=("Microsoft YaHei", 10), width=28)
+        search_entry.pack(side=tk.LEFT, padx=(6, 8), ipady=3)
+        search_status_var = tk.StringVar()
+        tk.Label(search_inner, textvariable=search_status_var, fg="gray", width=16, anchor="w",
+                 font=("Microsoft YaHei", 9)).pack(side=tk.RIGHT, padx=(8, 0))
+        tk.Button(search_inner, text="清空", command=lambda: search_var.set(""),
+                 bg="#E5E7EB", fg="#374151", padx=12, pady=3).pack(side=tk.RIGHT)
         
         table_frame = tk.Frame(history_window)
         table_frame.pack(fill=tk.BOTH, expand=True, padx=20, pady=10)
@@ -7567,35 +7795,61 @@ class OCRApp:
         style.configure("History.Treeview", font=("Microsoft YaHei", 10), rowheight=30)
         style.configure("History.Treeview.Heading", font=("Microsoft YaHei", 11, "bold"))
         
-        # 插入数据
-        for idx, item in enumerate(self.history_data):
-            tree.insert("", tk.END, 
-                       values=(item['timestamp'], 
-                              item['type'], 
-                              item['file_count'], 
-                              item['total_lines'],
-                              "查看详情"),
-                       tags=(f"item_{idx}",))
-        
-        # 设置行颜色
-        for i in range(len(self.history_data)):
-            if i % 2 == 0:
-                tree.tag_configure(f"item_{i}", background="#F5F5F5")
+        def history_item_matches(item, keyword):
+            """按时间、类型、文件名和识别内容搜索历史记录。"""
+            if not keyword:
+                return True
+            keyword = keyword.lower()
+            searchable_parts = [
+                str(item.get('timestamp', '')),
+                str(item.get('type', '')),
+                str(item.get('file_count', '')),
+                str(item.get('total_lines', '')),
+            ]
+            for file_info in item.get('files', []):
+                searchable_parts.append(str(file_info.get('name', '')))
+                for line in file_info.get('content', []):
+                    searchable_parts.append(str(line))
+            return keyword in "\n".join(searchable_parts).lower()
+
+        def refresh_history_tree(*args):
+            keyword = search_var.get().strip()
+            tree.delete(*tree.get_children())
+            matched_count = 0
+            for idx, item in enumerate(self.history_data):
+                if not history_item_matches(item, keyword):
+                    continue
+                tag = f"item_{matched_count}"
+                tree.insert("", tk.END,
+                           iid=f"history_{idx}",
+                           values=(item.get('timestamp', ''),
+                                  item.get('type', ''),
+                                  item.get('file_count', 0),
+                                  item.get('total_lines', 0),
+                                  "查看详情"),
+                           tags=(tag,))
+                if matched_count % 2 == 0:
+                    tree.tag_configure(tag, background="#F5F5F5")
+                matched_count += 1
+            if keyword:
+                search_status_var.set(f"找到 {matched_count}/{len(self.history_data)} 条")
+            else:
+                search_status_var.set("")
         
         # 双击查看详情
         def on_double_click(event):
-            item = tree.selection()
-            if item:
-                item_values = tree.item(item[0])['values']
-                timestamp = item_values[0]
-                
-                # 查找对应的历史记录
-                for history_item in self.history_data:
-                    if history_item['timestamp'] == timestamp:
-                        self.show_history_detail(history_item)
-                        break
+            selection = tree.selection()
+            if selection:
+                try:
+                    history_index = int(selection[0].replace("history_", ""))
+                    self.show_history_detail(self.history_data[history_index])
+                except (ValueError, IndexError):
+                    pass
         
         tree.bind("<Double-1>", on_double_click)
+        search_var.trace_add("write", refresh_history_tree)
+        search_entry.bind("<Return>", lambda e: on_double_click(e))
+        refresh_history_tree()
         
         # 按钮框架
         btn_frame = tk.Frame(history_window)
@@ -7616,14 +7870,8 @@ class OCRApp:
                 return
             
             try:
-                item_values = tree.item(selection[0])['values']
-                timestamp = item_values[0]
-                
-                # 查找对应的历史记录
-                history_item = next((item for item in self.history_data if item['timestamp'] == timestamp), None)
-                
-                if not history_item:
-                    return
+                history_index = int(selection[0].replace("history_", ""))
+                history_item = self.history_data[history_index]
 
                 # 提取纯文字内容
                 pure_content = []
@@ -8063,7 +8311,7 @@ class OCRApp:
         # 创建表格
         columns = ("日期", "类型", "次数", "成功")
         tree = ttk.Treeview(table_frame, columns=columns, show="headings", 
-                           yscrollcommand=scrollbar.set, height=25)
+                           yscrollcommand=scrollbar.set, height=25, selectmode="extended")
         
         # 设置列标题
         tree.heading("日期", text="日期")
@@ -8085,6 +8333,74 @@ class OCRApp:
         style = ttk.Style()
         style.configure("Treeview", font=("Microsoft YaHei", 10), rowheight=25)
         style.configure("Treeview.Heading", font=("Microsoft YaHei", 11, "bold"))
+
+        control_frame = tk.Frame(parent)
+        control_frame.pack(fill=tk.X, padx=20, pady=(0, 10))
+        tk.Label(control_frame, text="指定日期：", font=("Microsoft YaHei", 10)).pack(side=tk.LEFT)
+        delete_date_var = tk.StringVar()
+        delete_date_entry = tk.Entry(control_frame, textvariable=delete_date_var,
+                                     font=("Microsoft YaHei", 10), width=14)
+        delete_date_entry.pack(side=tk.LEFT, padx=(4, 8), ipady=2)
+        tk.Label(control_frame, text="多个日期可用逗号、空格或换行分隔", fg="gray",
+                 font=("Microsoft YaHei", 9)).pack(side=tk.LEFT, padx=(0, 12))
+
+        def parse_stats_dates(text):
+            return [part for part in re.split(r"[\s,，;；]+", text.strip()) if part]
+
+        def get_selected_stats_dates():
+            selection = tree.selection()
+            if not selection:
+                return []
+            selected_dates = []
+            item_id = selection[0]
+            for item_id in selection:
+                selected_date = ""
+                if item_id.startswith("daily|"):
+                    selected_date = item_id.split("|", 2)[1]
+                else:
+                    values = tree.item(item_id).get('values', [])
+                    selected_date = str(values[0]) if values and values[0] else ""
+                if selected_date and selected_date not in selected_dates:
+                    selected_dates.append(selected_date)
+            return selected_dates
+
+        def on_daily_select(event=None):
+            selected_dates = get_selected_stats_dates()
+            if selected_dates:
+                delete_date_var.set(", ".join(selected_dates))
+
+        def delete_stats_date():
+            target_dates = parse_stats_dates(delete_date_var.get())
+            if not target_dates:
+                messagebox.showwarning("提示", "请先输入日期，或在表格中选中要删除的日期")
+                return
+            existing_dates = [date for date in target_dates if date in self.stats]
+            missing_dates = [date for date in target_dates if date not in self.stats]
+            if not existing_dates:
+                messagebox.showwarning("提示", f"没有找到这些日期的统计记录：{', '.join(target_dates)}")
+                return
+            date_text = ", ".join(existing_dates)
+            missing_text = f"\n\n未找到并跳过：{', '.join(missing_dates)}" if missing_dates else ""
+            stats_window = parent.winfo_toplevel()
+            if not self.verify_admin_password(
+                parent_window=stats_window,
+                title="删除统计记录",
+                message=f"此操作将删除这些日期的识别统计：\n{date_text}\n请输入管理员密码："
+            ):
+                return
+            if not messagebox.askyesno("确认删除",
+                                       f"确定要删除这些日期的识别统计吗？\n{date_text}\n此操作不会删除识别历史记录。{missing_text}"):
+                return
+            for date in existing_dates:
+                del self.stats[date]
+            self.save_stats()
+            stats_window.destroy()
+            self.show_stats()
+            messagebox.showinfo("成功", f"已删除 {len(existing_dates)} 个日期的识别统计")
+
+        tk.Button(control_frame, text="删除指定日期统计", command=delete_stats_date,
+                  bg="#F44336", fg="white", padx=14, pady=5).pack(side=tk.LEFT)
+        tree.bind("<<TreeviewSelect>>", on_daily_select)
         
         # 插入数据
         sorted_dates = sorted(self.stats.keys(), reverse=True)
@@ -8098,19 +8414,19 @@ class OCRApp:
                 gen = day_data.get('general', {'count': 0, 'success': 0})
                 
                 # 插入高精度数据
-                tree.insert("", tk.END, values=(date, "高精度", 
+                tree.insert("", tk.END, iid=f"daily|{date}|accurate", values=(date, "高精度",
                                                acc.get('count', 0), 
                                                acc.get('success', 0)),
                            tags=("accurate",))
                 
                 # 插入快速识别数据
-                tree.insert("", tk.END, values=("", "快速", 
+                tree.insert("", tk.END, iid=f"daily|{date}|basic", values=("", "快速",
                                                bas.get('count', 0), 
                                                bas.get('success', 0)),
                            tags=("basic",))
                 
                 # 插入通用识别数据
-                tree.insert("", tk.END, values=("", "通用", 
+                tree.insert("", tk.END, iid=f"daily|{date}|general", values=("", "通用",
                                                gen.get('count', 0), 
                                                gen.get('success', 0)),
                            tags=("general",))
@@ -8118,7 +8434,7 @@ class OCRApp:
                 # 插入日合计
                 day_total_count = acc.get('count', 0) + bas.get('count', 0) + gen.get('count', 0)
                 day_total_success = acc.get('success', 0) + bas.get('success', 0) + gen.get('success', 0)
-                tree.insert("", tk.END, values=("", "日合计", 
+                tree.insert("", tk.END, iid=f"daily|{date}|total", values=("", "日合计",
                                                day_total_count, 
                                                day_total_success),
                            tags=("total",))
