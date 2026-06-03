@@ -771,6 +771,9 @@ class OCRApp:
         tk.Button(r_bar, text="简 -> 繁", command=self.convert_to_traditional, bg="#fff0f5").pack(side=tk.LEFT, padx=2)
         tk.Button(r_bar, text="🔄 替换", command=self._run_replace_rules_report, bg="#fff3e0").pack(side=tk.LEFT, padx=2)
         tk.Button(r_bar, text="⚙️ 替换设置", command=self.show_replace_settings, bg="#fff3e0").pack(side=tk.LEFT, padx=2)
+        sync_btn = tk.Button(r_bar, text="🔄 同步到数据", command=self.sync_report_to_data, bg="#c8e6c9")
+        sync_btn.pack(side=tk.LEFT, padx=2)
+        self.create_tooltip(sync_btn, "将文本报告区域的修改同步到数据源和分类表格\n• 在仅名称模式下修改后，点击此按钮\n• 切换到三列模式时修改也会生效")
 
         # 分隔方式切换按钮
         self.separator_btn = tk.Button(r_bar, text="分隔: ----", bg="#e0f0ff",
@@ -3796,7 +3799,7 @@ class OCRApp:
                 self.store.set('popup_windows', all_configs)
         except Exception:
             pass
-        settings_window = self.create_popup_window(self.root, "空格和清理规则设置", "space_filter_settings", 560, 370)
+        settings_window = self.create_popup_window(self.root, "空格和清理规则设置", "space_filter_settings", 860, 670, auto_fit=False)
         settings_window.configure(bg="#F8FAFC")
 
         colors = {
@@ -4074,16 +4077,6 @@ class OCRApp:
                     padx=26, pady=8).pack(side=tk.RIGHT, padx=(10, 0))
         make_button(footer, "💾 保存", save_settings, bg=colors["blue"], fg="#FFFFFF",
                     padx=28, pady=8, bold=True).pack(side=tk.RIGHT)
-
-        # 内容创建完后强制恢复到指定尺寸，防止fit_popup_to_content撑大
-        def _force_size():
-            sw = settings_window.winfo_screenwidth()
-            sh = settings_window.winfo_screenheight()
-            w, h = 860, 670
-            x = (sw - w) // 2
-            y = (sh - h) // 2
-            settings_window.geometry(f"{w}x{h}+{x}+{y}")
-        settings_window.after(250, _force_size)
     
     def show_preset_manager(self, parent_window):
         """显示预设管理器（简化版）"""
@@ -6894,7 +6887,7 @@ class OCRApp:
         except Exception as e:
             print(f"⚠️ 保存弹出窗口配置失败: {e}")
     
-    def create_popup_window(self, parent, title, window_name, default_width=500, default_height=400):
+    def create_popup_window(self, parent, title, window_name, default_width=500, default_height=400, auto_fit=True):
         """创建带配置保存功能的弹出窗口"""
         popup = tk.Toplevel(parent)
         popup.title(title)
@@ -6967,9 +6960,10 @@ class OCRApp:
                 popup._save_timer = popup.after(500, lambda: self.save_popup_config(window_name, popup))
         
         popup.bind('<Configure>', on_configure)
-        popup.after_idle(fit_popup_to_content)
-        popup.after(200, fit_popup_to_content)
-        
+        if auto_fit:
+            popup.after_idle(fit_popup_to_content)
+            popup.after(200, fit_popup_to_content)
+
         return popup
     
     def on_closing(self):
@@ -7241,52 +7235,149 @@ class OCRApp:
             return
         self.push_undo_snapshot("替换")
         changed = self.apply_replace_rules()
-        self.refresh_all()
+        
+        # 更新树视图中的条目，而不是完全刷新
+        for iid in self.tree.get_children(""):
+            if not self.is_tree_data_item(iid):
+                continue
+            vals = self.tree.item(iid, "values")
+            if len(vals) > 3:
+                idx = int(vals[3])
+                if idx in self.df.index:
+                    new_label = self.df.loc[idx, 'Label']
+                    group = self._get_group_from_values(vals)
+                    self.update_tree_item_in_place(iid, label_text=new_label, group_value=group)
+        
+        # 重新生成报告
+        self.generate_report_from_tree()
+        
         if changed:
             self.show_temp_message(f"✓ 替换完成：修改 {changed} 行")
         else:
             self.show_temp_message("✓ 没有匹配的内容")
 
     def _run_replace_rules_report(self):
-        """对文本报告的名称内容执行替换规则（不影响分类表格）"""
+        """对报告文本区域和数据源同步执行替换，在三列模式下只替换名称列"""
         if not self.replace_rules:
             messagebox.showinfo("提示", "还没有配置替换规则，请先点「⚙️ 替换设置」添加规则。")
             return
-        content = self.report_text.get("1.0", tk.END)
-        if not content.strip():
-            self.show_temp_message("✓ 报告为空，无需替换")
+        
+        if self.df.empty:
+            self.show_temp_message("✓ 没有数据")
             return
-
-        changed = 0
-        new_lines = []
-        separator = "----"
-        for line in content.splitlines(keepends=True):
-            stripped = line.strip()
-            # 标题行和分隔线不替换
-            if (stripped.startswith("【") and "】" in stripped) or stripped == separator:
-                new_lines.append(line)
+        
+        self.push_undo_snapshot("报告替换")
+        order_backup = self.df['Order'].copy() if 'Order' in self.df.columns else None
+        
+        # 1. 更新数据源（df）
+        self.df['Label'] = self.df['Label'].astype(str)
+        before = self.df['Label'].copy()
+        for rule in self.replace_rules:
+            find = rule.get('find', '')
+            replace = rule.get('replace', '')
+            if not find:
                 continue
-            new_line = line
-            for rule in self.replace_rules:
-                find = rule.get('find', '')
-                replace = rule.get('replace', '')
-                if find and find in new_line:
-                    changed += new_line.count(find)
-                    new_line = new_line.replace(find, replace)
-            new_lines.append(new_line)
-
-        # 记住当前滚动位置
+            self.df['Label'] = self.df['Label'].str.replace(find, replace, regex=False)
+        
+        if order_backup is not None:
+            self.df['Order'] = order_backup
+        
+        changed = int((self.df['Label'] != before).sum())
+        
+        # 2. 更新树视图
+        for iid in self.tree.get_children(""):
+            if not self.is_tree_data_item(iid):
+                continue
+            vals = self.tree.item(iid, "values")
+            if len(vals) > 3:
+                idx = int(vals[3])
+                if idx in self.df.index:
+                    new_label = self.df.loc[idx, 'Label']
+                    group = self._get_group_from_values(vals)
+                    self.update_tree_item_in_place(iid, label_text=new_label, group_value=group)
+        
+        # 3. 更新报告文本区域
         yview = self.report_text.yview()
-
-        self.report_text.delete("1.0", tk.END)
-        self.report_text.insert("1.0", ''.join(new_lines))
-
-        # 恢复滚动位置
+        self.generate_report_from_tree()
         self.report_text.yview_moveto(yview[0])
+        
         if changed:
-            self.show_temp_message(f"✓ 报告替换完成：共替换 {changed} 处")
+            self.show_temp_message(f"✓ 报告替换完成：修改 {changed} 行")
         else:
             self.show_temp_message("✓ 没有匹配的内容")
+
+    def sync_report_to_data(self):
+        """将文本报告区域的内容同步回数据源（df）和树视图"""
+        if self.df.empty:
+            messagebox.showinfo("提示", "没有数据可以同步")
+            return
+        
+        # 保存当前状态到撤销栈
+        self.push_undo_snapshot("同步报告到数据")
+        
+        content = self.report_text.get("1.0", tk.END).strip()
+        if not content:
+            self.show_temp_message("✓ 报告内容为空，没有同步")
+            return
+        
+        # 从树视图获取所有数据项的顺序和信息
+        tree_items = []
+        for iid in self.tree.get_children(""):
+            if not self.is_tree_data_item(iid):
+                continue
+            vals = self.tree.item(iid, "values")
+            if len(vals) > 3:
+                idx = int(vals[3])
+                tree_items.append({
+                    "iid": iid,
+                    "idx": idx,
+                    "label": vals[0],
+                    "group": self._get_group_from_values(vals),
+                    "category": vals[4] if len(vals) > 4 else None
+                })
+        
+        # 解析报告内容
+        lines = content.split("\n")
+        separator = "----" if self.report_separator == 'line' else ""
+        
+        # 收集所有实际的名称行（排除标题、分隔线等）
+        name_lines = []
+        for line in lines:
+            line = line.strip()
+            if not line:
+                continue
+            if line.startswith("【") and line.endswith("】:"):
+                continue  # 跳过分类标题
+            if separator and line == separator:
+                continue  # 跳过分隔线
+            
+            if self.report_format == 'columns':
+                # 三列模式：解析制表符分隔的字段
+                parts = line.split("\t")
+                if len(parts) >= 2:
+                    # 格式：分类\t名称\t组
+                    name = parts[1]
+                    name_lines.append(name)
+            else:
+                # 仅名称模式：直接使用整行作为名称
+                name_lines.append(line)
+        
+        # 将解析出的名称与树视图中的项目进行匹配更新
+        updated = 0
+        for i, tree_item in enumerate(tree_items):
+            if i < len(name_lines):
+                new_label = name_lines[i]
+                # 更新数据源
+                if tree_item["idx"] in self.df.index:
+                    self.df.loc[tree_item["idx"], 'Label'] = new_label
+                # 更新树视图
+                self.update_tree_item_in_place(tree_item["iid"], label_text=new_label, group_value=tree_item["group"])
+                updated += 1
+        
+        if updated > 0:
+            self.show_temp_message(f"✓ 已同步 {updated} 个项目")
+        else:
+            self.show_temp_message("✓ 没有需要同步的更改")
 
     def save_replace_config(self):
         """保存替换规则"""
@@ -7303,13 +7394,15 @@ class OCRApp:
         if not rules:
             return 0
 
+        # 确保 Label 列是字符串类型并保存 before 副本
+        self.df['Label'] = self.df['Label'].astype(str)
         before = self.df['Label'].copy()
         for rule in rules:
             find = rule.get('find', '')
             replace = rule.get('replace', '')
             if not find:
                 continue
-            self.df['Label'] = self.df['Label'].str.replace(re.escape(find), replace, regex=True)
+            self.df['Label'] = self.df['Label'].str.replace(find, replace, regex=False)
 
         changed = int((self.df['Label'] != before).sum())
         return changed
