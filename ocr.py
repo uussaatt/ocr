@@ -791,6 +791,9 @@ class OCRApp:
         self.report_text = scrolledtext.ScrolledText(self.tab_report, wrap=tk.WORD, 
                                                    font=("Microsoft YaHei", 11))
         self.report_text.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+        
+        # 加载报告格式和分隔方式设置
+        self.load_report_config()
 
     def setup_plot_tab(self):
         """定义绘图标签页内容"""
@@ -2218,6 +2221,7 @@ class OCRApp:
         else:
             self.report_separator = 'line'
             self.separator_btn.config(text="分隔: ----")
+        self.save_report_config()
         self.generate_report_from_tree()
 
     def toggle_report_format(self):
@@ -2228,6 +2232,7 @@ class OCRApp:
         else:
             self.report_format = 'columns'
             self.report_format_btn.config(text="格式: 三列")
+        self.save_report_config()
         self.generate_report_from_tree()
 
     def generate_report_from_tree(self):
@@ -4278,12 +4283,8 @@ class OCRApp:
                 messagebox.showerror("导出失败", f"导出文件时出错：{str(e)}")
 
     def export_excel_file(self):
-        """导出 Excel：从分类表格读取辈分、内容和组。"""
+        """导出 Excel：从文本报告读取内容，支持三列和仅名称模式。"""
         try:
-            if self.df.empty:
-                messagebox.showwarning("提示", "没有数据可以导出！")
-                return
-
             if not self.confirm_export_with_red_name_group_issues():
                 return
 
@@ -4295,16 +4296,46 @@ class OCRApp:
             if not path:
                 return
 
-            # 直接从树的当前顺序读取，保证和报告一致
+            # 获取报告文本内容
+            report_content = self.report_text.get("1.0", tk.END).strip()
+            if not report_content:
+                messagebox.showwarning("提示", "报告内容为空！")
+                return
+
+            lines = report_content.split("\n")
+            separator = "----" if self.report_separator == 'line' else ""
+            
             rows = []
-            for iid in self.tree.get_children(""):
-                vals = self.tree.item(iid, "values")
-                if not vals or len(vals) < 4:
+            current_category = ""
+            
+            for line in lines:
+                line_stripped = line.strip()
+                
+                # 跳过空行和分隔线
+                if not line_stripped:
                     continue
-                name = vals[0]
-                group = vals[2]
-                category = self.get_tree_item_category(iid)
-                rows.append({"辈分": category, "内容": name, "组": group})
+                if separator and line_stripped == separator:
+                    continue
+                
+                # 检查是否是分类标题（格式：【分类名】:）
+                if line_stripped.startswith("【") and line_stripped.endswith("】:"):
+                    current_category = line_stripped[1:-2]
+                    continue
+                
+                # 根据报告格式解析行内容
+                if self.report_format == 'columns':
+                    # 三列模式：分类\t名称\t组
+                    parts = line.split("\t")
+                    if len(parts) >= 3:
+                        category = parts[0].strip()
+                        name = parts[1].strip()
+                        group = parts[2].strip()
+                        if category:
+                            current_category = category
+                        rows.append({"辈分": current_category, "内容": name, "组": group})
+                else:
+                    # 仅名称模式：只有内容
+                    rows.append({"辈分": current_category, "内容": line_stripped, "组": ""})
 
             if not rows:
                 messagebox.showwarning("提示", "没有可导出的数据！")
@@ -4339,7 +4370,7 @@ class OCRApp:
                 for col, width in widths.items():
                     ws.column_dimensions[col].width = width
 
-            self.save_export_record(path, self.report_text.get("1.0", tk.END).strip())
+            self.save_export_record(path, report_content)
             messagebox.showinfo("导出成功", f"Excel 已导出：\n{path}")
 
         except ImportError:
@@ -7224,6 +7255,35 @@ class OCRApp:
         except Exception as e:
             print(f"⚠️ 加载替换规则失败: {e}")
             self.replace_rules = []
+    
+    def load_report_config(self):
+        """加载报告格式和分隔方式设置"""
+        try:
+            self.report_format = self.store.get('report_format', 'legacy')
+            self.report_separator = self.store.get('report_separator', 'line')
+            # 更新按钮显示
+            if hasattr(self, 'report_format_btn'):
+                if self.report_format == 'columns':
+                    self.report_format_btn.config(text="格式: 三列")
+                else:
+                    self.report_format_btn.config(text="格式: 仅名称")
+            if hasattr(self, 'separator_btn'):
+                if self.report_separator == 'blank':
+                    self.separator_btn.config(text="分隔: 空行")
+                else:
+                    self.separator_btn.config(text="分隔: ----")
+        except Exception as e:
+            print(f"⚠️ 加载报告设置失败: {e}")
+            self.report_format = 'legacy'
+            self.report_separator = 'line'
+    
+    def save_report_config(self):
+        """保存报告格式和分隔方式设置"""
+        try:
+            self.store.set('report_format', self.report_format)
+            self.store.set('report_separator', self.report_separator)
+        except Exception as e:
+            print(f"⚠️ 保存报告设置失败: {e}")
 
     def _run_replace_rules(self):
         """直接执行替换规则（作用于分类表格的 df）"""
@@ -7257,52 +7317,86 @@ class OCRApp:
             self.show_temp_message("✓ 没有匹配的内容")
 
     def _run_replace_rules_report(self):
-        """对报告文本区域和数据源同步执行替换，在三列模式下只替换名称列"""
+        """对报告文本区域直接进行替换，在三列模式下只替换名称列"""
         if not self.replace_rules:
             messagebox.showinfo("提示", "还没有配置替换规则，请先点「⚙️ 替换设置」添加规则。")
             return
         
-        if self.df.empty:
-            self.show_temp_message("✓ 没有数据")
-            return
-        
+        # 保存当前状态到撤销栈
         self.push_undo_snapshot("报告替换")
-        order_backup = self.df['Order'].copy() if 'Order' in self.df.columns else None
         
-        # 1. 更新数据源（df）
-        self.df['Label'] = self.df['Label'].astype(str)
-        before = self.df['Label'].copy()
-        for rule in self.replace_rules:
-            find = rule.get('find', '')
-            replace = rule.get('replace', '')
-            if not find:
+        # 获取当前报告文本
+        content = self.report_text.get("1.0", tk.END)
+        lines = content.split("\n")
+        separator = "----" if self.report_separator == 'line' else ""
+        
+        changed_count = 0
+        new_lines = []
+        
+        for line in lines:
+            line_stripped = line.strip()
+            
+            # 检查是否是标题、分隔线等不需要替换的内容
+            if not line_stripped:
+                new_lines.append(line)
                 continue
-            self.df['Label'] = self.df['Label'].str.replace(find, replace, regex=False)
-        
-        if order_backup is not None:
-            self.df['Order'] = order_backup
-        
-        changed = int((self.df['Label'] != before).sum())
-        
-        # 2. 更新树视图
-        for iid in self.tree.get_children(""):
-            if not self.is_tree_data_item(iid):
+            if line_stripped.startswith("【") and line_stripped.endswith("】:"):
+                new_lines.append(line)
                 continue
-            vals = self.tree.item(iid, "values")
-            if len(vals) > 3:
-                idx = int(vals[3])
-                if idx in self.df.index:
-                    new_label = self.df.loc[idx, 'Label']
-                    group = self._get_group_from_values(vals)
-                    self.update_tree_item_in_place(iid, label_text=new_label, group_value=group)
+            if separator and line_stripped == separator:
+                new_lines.append(line)
+                continue
+            
+            # 根据格式进行替换
+            if self.report_format == 'columns':
+                # 三列模式：只替换中间的名称列
+                parts = line.split("\t")
+                if len(parts) >= 3:
+                    # 格式：分类\t名称\t组
+                    category = parts[0]
+                    name = parts[1]
+                    group = parts[2]
+                    
+                    original_name = name
+                    # 对名称列进行替换
+                    for rule in self.replace_rules:
+                        find = rule.get('find', '')
+                        replace = rule.get('replace', '')
+                        if find:
+                            name = name.replace(find, replace)
+                    
+                    if name != original_name:
+                        changed_count += 1
+                    
+                    # 重新组合
+                    new_line = f"{category}\t{name}\t{group}"
+                    # 保留原行的其他部分（如果有）
+                    if len(parts) > 3:
+                        new_line += "\t" + "\t".join(parts[3:])
+                    new_lines.append(new_line)
+                else:
+                    # 不是标准三列格式，直接保留
+                    new_lines.append(line)
+            else:
+                # 仅名称模式：直接替换整行
+                original_line = line
+                for rule in self.replace_rules:
+                    find = rule.get('find', '')
+                    replace = rule.get('replace', '')
+                    if find:
+                        line = line.replace(find, replace)
+                if line != original_line:
+                    changed_count += 1
+                new_lines.append(line)
         
-        # 3. 更新报告文本区域
+        # 更新报告文本
         yview = self.report_text.yview()
-        self.generate_report_from_tree()
+        self.report_text.delete("1.0", tk.END)
+        self.report_text.insert("1.0", "\n".join(new_lines))
         self.report_text.yview_moveto(yview[0])
         
-        if changed:
-            self.show_temp_message(f"✓ 报告替换完成：修改 {changed} 行")
+        if changed_count > 0:
+            self.show_temp_message(f"✓ 报告替换完成：修改 {changed_count} 处")
         else:
             self.show_temp_message("✓ 没有匹配的内容")
 
