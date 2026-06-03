@@ -439,7 +439,7 @@ class OCRApp:
 
         # 报告分隔方式：'line'=----分隔线，'blank'=空行
         self.report_separator = 'line'
-        self.report_format = 'columns'
+        self.report_format = 'legacy'
         self.df = pd.DataFrame(columns=['Label', 'Y', 'X', 'Group', 'Order'])
         self.thresholds = []
         self.category_list = []
@@ -693,13 +693,13 @@ class OCRApp:
         self.inner_nb.add(self.tab_tree, text="分类表格")
         t_bar = tk.Frame(self.tab_tree, bg="#ddd")
         t_bar.pack(fill=tk.X, side=tk.TOP)
-        tk.Button(t_bar, text="➕ 新增", command=self.open_add_data_dialog, bg="#ccffcc").pack(side=tk.LEFT, padx=2,
+        tk.Button(t_bar, text="➕ 新增  [Ins]", command=self.open_add_data_dialog, bg="#ccffcc").pack(side=tk.LEFT, padx=2,
                                                                                               pady=2)
-        tk.Button(t_bar, text="❌ 删除", command=self.delete_selected_data, bg="#ffcccc").pack(side=tk.LEFT, padx=2,
+        tk.Button(t_bar, text="❌ 删除  [Del]", command=self.delete_selected_data, bg="#ffcccc").pack(side=tk.LEFT, padx=2,
                                                                                               pady=2)
         tk.Label(t_bar, text="|").pack(side=tk.LEFT, padx=2)
-        tk.Button(t_bar, text="↑ 上移", command=self.move_item_up).pack(side=tk.LEFT, padx=2)
-        tk.Button(t_bar, text="↓ 下移", command=self.move_item_down).pack(side=tk.LEFT, padx=2)
+        tk.Button(t_bar, text="↑", command=self.move_item_up, width=3).pack(side=tk.LEFT, padx=2)
+        tk.Button(t_bar, text="↓", command=self.move_item_down, width=3).pack(side=tk.LEFT, padx=2)
         self.undo_btn = tk.Button(t_bar, text="↶ 撤销", command=self.undo_classifier_action, state=tk.DISABLED)
         self.undo_btn.pack(side=tk.LEFT, padx=2)
         tk.Button(t_bar, text="📋 历史", command=self.show_history_panel, bg="#e8eaf6").pack(side=tk.LEFT, padx=2)
@@ -707,8 +707,6 @@ class OCRApp:
         tk.Button(t_bar, text="拆分A组", command=self.apply_corrections, bg="#e3f2fd").pack(side=tk.LEFT, padx=2)
         self.create_tooltip(t_bar.winfo_children()[-1], "拆分所有组值为A且文字数大于2的项目")
         tk.Button(t_bar, text="⚙️ 空格/清理设置", command=self.show_space_settings, bg="#f3e5f5").pack(side=tk.LEFT, padx=2)
-        tk.Button(t_bar, text="🔄 替换", command=self._run_replace_rules, bg="#fff3e0").pack(side=tk.LEFT, padx=2)
-        tk.Button(t_bar, text="⚙️ 替换设置", command=self.show_replace_settings, bg="#fff3e0").pack(side=tk.LEFT, padx=2)
         tk.Button(t_bar, text="🎨 字体样式", command=self.show_font_style_settings, bg="#e8f5e8").pack(side=tk.LEFT, padx=2)
         
         # 添加功能提示
@@ -752,6 +750,13 @@ class OCRApp:
         self.tree.bind("<Double-1>", self.on_double_click)  # 添加双击事件
         self.tree.bind("<space>", self.split_group_a_items)  # 空格键拆分所有A组
 
+        # 快捷键
+        self.tree.bind("<Insert>", lambda e: self.open_add_data_dialog())   # Insert 新增
+        self.tree.bind("<Delete>", lambda e: self.delete_selected_data())   # Delete 删除
+        self.tree.bind("<Up>", self._on_tree_up)                            # ↑ 上移
+        self.tree.bind("<Down>", self._on_tree_down)                        # ↓ 下移
+        self.tree.bind("<Control-z>", lambda e: self.undo_classifier_action())  # Ctrl+Z 撤销
+
         # --- 报告页 ---
         self.tab_report = tk.Frame(self.inner_nb)
         self.inner_nb.add(self.tab_report, text="文本报告")
@@ -764,12 +769,14 @@ class OCRApp:
         self.create_tooltip(r_bar.winfo_children()[-1], "查看和管理导出的TXT文件历史记录\n• 查看、复制或保存之前导出的内容\n• 一键导出所有记录（需要密码）\n• 清空所有记录（需要密码）")
         tk.Button(r_bar, text="繁 -> 简", command=self.convert_to_simplified, bg="#fff0f5").pack(side=tk.LEFT, padx=2)
         tk.Button(r_bar, text="简 -> 繁", command=self.convert_to_traditional, bg="#fff0f5").pack(side=tk.LEFT, padx=2)
+        tk.Button(r_bar, text="🔄 替换", command=self._run_replace_rules_report, bg="#fff3e0").pack(side=tk.LEFT, padx=2)
+        tk.Button(r_bar, text="⚙️ 替换设置", command=self.show_replace_settings, bg="#fff3e0").pack(side=tk.LEFT, padx=2)
 
         # 分隔方式切换按钮
         self.separator_btn = tk.Button(r_bar, text="分隔: ----", bg="#e0f0ff",
                                        command=self.toggle_report_separator)
         self.separator_btn.pack(side=tk.LEFT, padx=2)
-        self.report_format_btn = tk.Button(r_bar, text="格式: 三列", bg="#e8eaf6",
+        self.report_format_btn = tk.Button(r_bar, text="格式: 仅名称", bg="#e8eaf6",
                                            command=self.toggle_report_format)
         self.report_format_btn.pack(side=tk.LEFT, padx=2)
         
@@ -1158,6 +1165,16 @@ class OCRApp:
             if shift:
                 self.set_tree_row_values(iid, values[0], values[1], values[2], idx - shift)
 
+    def _on_tree_up(self, event):
+        """↑ 键：移动选中条目向上，阻止默认光标跳行"""
+        self.move_item_up()
+        return "break"
+
+    def _on_tree_down(self, event):
+        """↓ 键：移动选中条目向下，阻止默认光标跳行"""
+        self.move_item_down()
+        return "break"
+
     def move_item_up(self):
         """上移项目"""
         selected = self.tree.selection()
@@ -1189,8 +1206,12 @@ class OCRApp:
             self.update_undo_button_state()
             self._refresh_history_panel()
             self.update_order_from_tree()
-        
+
         self.generate_report_from_tree()
+        # 移动后让焦点和视图跟随被移动的条目
+        if selected:
+            self.tree.focus(selected[0])
+            self.tree.see(selected[0])
 
     def move_item_down(self):
         """下移项目"""
@@ -1224,8 +1245,12 @@ class OCRApp:
             self.update_undo_button_state()
             self._refresh_history_panel()
             self.update_order_from_tree()
-        
+
         self.generate_report_from_tree()
+        # 移动后让焦点和视图跟随被移动的条目
+        if selected:
+            self.tree.focus(selected[0])
+            self.tree.see(selected[0])
 
     def update_order_from_tree(self):
         """从树视图的当前顺序更新DataFrame中的Order列，同时更新圈选分类的ordered_indices"""
@@ -1353,6 +1378,7 @@ class OCRApp:
         btn_frame.pack(fill=tk.X, padx=16, pady=(16, 14))
 
         def do_save(keep_open=False):
+            nonlocal insert_pos, selected, default_y, default_x
             name = n_ent.get().strip()
             if not name:
                 n_ent.config(highlightbackground="#EF4444")
@@ -1432,6 +1458,10 @@ class OCRApp:
                 self.generate_report_from_tree()
 
                 if keep_open:
+                    # 下次插入紧接在刚新增的行后面
+                    insert_pos = insert_pos + 1
+                    selected = [new_iid]
+                    default_y = default_y + 1
                     n_ent.delete(0, tk.END)
                     n_ent.config(highlightbackground="#D1D5DB")
                     n_ent.focus_set()
@@ -2191,7 +2221,7 @@ class OCRApp:
         """切换文本报告格式。"""
         if self.report_format == 'columns':
             self.report_format = 'legacy'
-            self.report_format_btn.config(text="格式: 旧版")
+            self.report_format_btn.config(text="格式: 仅名称")
         else:
             self.report_format = 'columns'
             self.report_format_btn.config(text="格式: 三列")
@@ -2247,8 +2277,10 @@ class OCRApp:
                     name = name[leading_tildes:]
 
                 if self.report_format == 'legacy':
+                    # 仅名称模式：只输出名称
                     content += f"{name}\n"
                 else:
+                    # 三列模式：分类\t名称\t组，预览 Excel 导出效果
                     content += f"{category}\t{name}\t{group}\n"
                 prev_group = group
                 prev_is_red = is_red
@@ -3756,7 +3788,15 @@ class OCRApp:
     
     def show_space_settings(self):
         """显示空格规则和清理规则的合并设置窗口"""
-        settings_window = self.create_popup_window(self.root, "空格和清理规则设置", "space_filter_settings", 860, 670)
+        # 清除保存的窗口尺寸，始终用默认尺寸打开
+        try:
+            all_configs = self.store.get('popup_windows', {})
+            if 'space_filter_settings' in all_configs:
+                del all_configs['space_filter_settings']
+                self.store.set('popup_windows', all_configs)
+        except Exception:
+            pass
+        settings_window = self.create_popup_window(self.root, "空格和清理规则设置", "space_filter_settings", 560, 370)
         settings_window.configure(bg="#F8FAFC")
 
         colors = {
@@ -4034,6 +4074,16 @@ class OCRApp:
                     padx=26, pady=8).pack(side=tk.RIGHT, padx=(10, 0))
         make_button(footer, "💾 保存", save_settings, bg=colors["blue"], fg="#FFFFFF",
                     padx=28, pady=8, bold=True).pack(side=tk.RIGHT)
+
+        # 内容创建完后强制恢复到指定尺寸，防止fit_popup_to_content撑大
+        def _force_size():
+            sw = settings_window.winfo_screenwidth()
+            sh = settings_window.winfo_screenheight()
+            w, h = 860, 670
+            x = (sw - w) // 2
+            y = (sh - h) // 2
+            settings_window.geometry(f"{w}x{h}+{x}+{y}")
+        settings_window.after(250, _force_size)
     
     def show_preset_manager(self, parent_window):
         """显示预设管理器（简化版）"""
@@ -4235,11 +4285,10 @@ class OCRApp:
                 messagebox.showerror("导出失败", f"导出文件时出错：{str(e)}")
 
     def export_excel_file(self):
-        """导出 Excel：按文本报告列导出辈分、内容和组。"""
+        """导出 Excel：从分类表格读取辈分、内容和组。"""
         try:
-            raw = self.report_text.get("1.0", tk.END)
-            if not raw.strip():
-                messagebox.showwarning("提示", "没有文本报告内容可以导出！")
+            if self.df.empty:
+                messagebox.showwarning("提示", "没有数据可以导出！")
                 return
 
             if not self.confirm_export_with_red_name_group_issues():
@@ -4253,34 +4302,28 @@ class OCRApp:
             if not path:
                 return
 
+            # 直接从树的当前顺序读取，保证和报告一致
             rows = []
-            title_pattern = re.compile(r'^【.*】[:：]?$')
-            for line in raw.splitlines():
-                stripped = line.strip()
-                if not stripped or stripped == "----":
+            for iid in self.tree.get_children(""):
+                vals = self.tree.item(iid, "values")
+                if not vals or len(vals) < 4:
                     continue
-                if title_pattern.match(stripped):
-                    continue
-                parts = line.split("\t", 2)
-                if len(parts) == 3 and parts[2].strip() in ['A', 'B', 'C', 'D']:
-                    rows.append({
-                        "辈分": parts[0].strip(),
-                        "内容": parts[1].strip(),
-                        "组": parts[2].strip()
-                    })
+                name = vals[0]
+                group = vals[2]
+                category = self.get_tree_item_category(iid)
+                rows.append({"辈分": category, "内容": name, "组": group})
 
             if not rows:
-                messagebox.showwarning("提示", "没有可导出的文本报告数据！")
+                messagebox.showwarning("提示", "没有可导出的数据！")
                 return
 
+            # 相邻辈分和组相同的合并内容
             merged_rows = []
             current_row = None
             for row in rows:
-                if (
-                    current_row
-                    and current_row["辈分"] == row["辈分"]
-                    and current_row["组"] == row["组"]
-                ):
+                if (current_row
+                        and current_row["辈分"] == row["辈分"]
+                        and current_row["组"] == row["组"]):
                     current_row["内容"] += f"\n{row['内容']}"
                 else:
                     if current_row:
@@ -4303,7 +4346,7 @@ class OCRApp:
                 for col, width in widths.items():
                     ws.column_dimensions[col].width = width
 
-            self.save_export_record(path, raw.strip())
+            self.save_export_record(path, self.report_text.get("1.0", tk.END).strip())
             messagebox.showinfo("导出成功", f"Excel 已导出：\n{path}")
 
         except ImportError:
@@ -6860,29 +6903,19 @@ class OCRApp:
         
         # 加载保存的配置
         config = self.load_popup_config(window_name)
-        
+
         if config:
             width = config.get('width', default_width)
             height = config.get('height', default_height)
-            x = config.get('x', None)
-            y = config.get('y', None)
-            
-            if x is not None and y is not None:
-                popup.geometry(f"{width}x{height}+{x}+{y}")
-            else:
-                popup.geometry(f"{width}x{height}")
-                # 居中显示
-                popup.update_idletasks()
-                x = (popup.winfo_screenwidth() // 2) - (width // 2)
-                y = (popup.winfo_screenheight() // 2) - (height // 2)
-                popup.geometry(f"{width}x{height}+{x}+{y}")
         else:
-            # 使用默认尺寸并居中
-            popup.geometry(f"{default_width}x{default_height}")
-            popup.update_idletasks()
-            x = (popup.winfo_screenwidth() // 2) - (default_width // 2)
-            y = (popup.winfo_screenheight() // 2) - (default_height // 2)
-            popup.geometry(f"{default_width}x{default_height}+{x}+{y}")
+            width = default_width
+            height = default_height
+
+        # 始终居中显示，不使用保存的位置
+        popup.update_idletasks()
+        x = (popup.winfo_screenwidth() // 2) - (width // 2)
+        y = (popup.winfo_screenheight() // 2) - (height // 2)
+        popup.geometry(f"{width}x{height}+{x}+{y}")
         
         # 设置最小尺寸
         popup.minsize(default_width, default_height)
@@ -6904,7 +6937,6 @@ class OCRApp:
                 new_height = min(max(current_height, required_height), max_height)
 
                 if new_width <= current_width and new_height <= current_height:
-                    popup.minsize(min(current_width, max_width), min(current_height, max_height))
                     return
 
                 x = popup.winfo_x()
@@ -6915,7 +6947,6 @@ class OCRApp:
                     y = max(20, screen_height - new_height - 60)
 
                 popup.geometry(f"{new_width}x{new_height}+{x}+{y}")
-                popup.minsize(new_width, new_height)
             except Exception as e:
                 print(f"⚠️ 自动调整弹窗尺寸失败: {e}")
         
@@ -7201,7 +7232,7 @@ class OCRApp:
             self.replace_rules = []
 
     def _run_replace_rules(self):
-        """直接执行替换规则"""
+        """直接执行替换规则（作用于分类表格的 df）"""
         if self.df.empty:
             messagebox.showwarning("提示", "没有数据可以处理！")
             return
@@ -7213,6 +7244,47 @@ class OCRApp:
         self.refresh_all()
         if changed:
             self.show_temp_message(f"✓ 替换完成：修改 {changed} 行")
+        else:
+            self.show_temp_message("✓ 没有匹配的内容")
+
+    def _run_replace_rules_report(self):
+        """对文本报告的名称内容执行替换规则（不影响分类表格）"""
+        if not self.replace_rules:
+            messagebox.showinfo("提示", "还没有配置替换规则，请先点「⚙️ 替换设置」添加规则。")
+            return
+        content = self.report_text.get("1.0", tk.END)
+        if not content.strip():
+            self.show_temp_message("✓ 报告为空，无需替换")
+            return
+
+        changed = 0
+        new_lines = []
+        separator = "----"
+        for line in content.splitlines(keepends=True):
+            stripped = line.strip()
+            # 标题行和分隔线不替换
+            if (stripped.startswith("【") and "】" in stripped) or stripped == separator:
+                new_lines.append(line)
+                continue
+            new_line = line
+            for rule in self.replace_rules:
+                find = rule.get('find', '')
+                replace = rule.get('replace', '')
+                if find and find in new_line:
+                    changed += new_line.count(find)
+                    new_line = new_line.replace(find, replace)
+            new_lines.append(new_line)
+
+        # 记住当前滚动位置
+        yview = self.report_text.yview()
+
+        self.report_text.delete("1.0", tk.END)
+        self.report_text.insert("1.0", ''.join(new_lines))
+
+        # 恢复滚动位置
+        self.report_text.yview_moveto(yview[0])
+        if changed:
+            self.show_temp_message(f"✓ 报告替换完成：共替换 {changed} 处")
         else:
             self.show_temp_message("✓ 没有匹配的内容")
 
