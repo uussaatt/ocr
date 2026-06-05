@@ -7329,7 +7329,7 @@ class OCRApp:
         content = self.report_text.get("1.0", tk.END)
         lines = content.split("\n")
         separator = "----" if self.report_separator == 'line' else ""
-        
+
         changed_count = 0
         new_lines = []
         
@@ -7349,34 +7349,26 @@ class OCRApp:
             
             # 根据格式进行替换
             if self.report_format == 'columns':
-                # 三列模式：只替换中间的名称列
+                # 三列模式：报告由“分类\t名称\t组”生成，只替换名称列。
                 parts = line.split("\t")
-                if len(parts) >= 3:
-                    # 格式：分类\t名称\t组
-                    category = parts[0]
-                    name = parts[1]
-                    group = parts[2]
-                    
-                    original_name = name
-                    # 对名称列进行替换
-                    for rule in self.replace_rules:
-                        find = rule.get('find', '')
-                        replace = rule.get('replace', '')
-                        if find:
-                            name = name.replace(find, replace)
-                    
-                    if name != original_name:
-                        changed_count += 1
-                    
-                    # 重新组合
-                    new_line = f"{category}\t{name}\t{group}"
-                    # 保留原行的其他部分（如果有）
-                    if len(parts) > 3:
-                        new_line += "\t" + "\t".join(parts[3:])
-                    new_lines.append(new_line)
-                else:
-                    # 不是标准三列格式，直接保留
+                if len(parts) < 3:
                     new_lines.append(line)
+                    continue
+
+                original_name = parts[1]
+                name = original_name
+                # 对名称列进行替换
+                for rule in self.replace_rules:
+                    find = rule.get('find', '')
+                    replace = rule.get('replace', '')
+                    if find:
+                        name = name.replace(find, replace)
+                
+                if name != original_name:
+                    changed_count += 1
+
+                parts[1] = name
+                new_lines.append("\t".join(parts))
             else:
                 # 仅名称模式：直接替换整行
                 original_line = line
@@ -7409,8 +7401,8 @@ class OCRApp:
         # 保存当前状态到撤销栈
         self.push_undo_snapshot("同步报告到数据")
         
-        content = self.report_text.get("1.0", tk.END).strip()
-        if not content:
+        content = self.report_text.get("1.0", tk.END)
+        if not content.strip():
             self.show_temp_message("✓ 报告内容为空，没有同步")
             return
         
@@ -7433,28 +7425,26 @@ class OCRApp:
         # 解析报告内容
         lines = content.split("\n")
         separator = "----" if self.report_separator == 'line' else ""
-        
+
         # 收集所有实际的名称行（排除标题、分隔线等）
         name_lines = []
         for line in lines:
-            line = line.strip()
-            if not line:
+            line_stripped = line.strip()
+            if not line_stripped:
                 continue
-            if line.startswith("【") and line.endswith("】:"):
+            if line_stripped.startswith("【") and line_stripped.endswith("】:"):
                 continue  # 跳过分类标题
-            if separator and line == separator:
+            if separator and line_stripped == separator:
                 continue  # 跳过分隔线
             
             if self.report_format == 'columns':
-                # 三列模式：解析制表符分隔的字段
+                # 三列模式：报告由“分类\t名称\t组”生成，只同步名称列。
                 parts = line.split("\t")
-                if len(parts) >= 2:
-                    # 格式：分类\t名称\t组
-                    name = parts[1]
-                    name_lines.append(name)
+                if len(parts) >= 3:
+                    name_lines.append(parts[1].strip())
             else:
                 # 仅名称模式：直接使用整行作为名称
-                name_lines.append(line)
+                name_lines.append(line_stripped)
         
         # 将解析出的名称与树视图中的项目进行匹配更新
         updated = 0
