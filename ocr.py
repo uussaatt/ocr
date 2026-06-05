@@ -7326,8 +7326,8 @@ class OCRApp:
         self.push_undo_snapshot("报告替换")
         
         # 获取当前报告文本
-        content = self.report_text.get("1.0", tk.END)
-        lines = content.split("\n")
+        content = self.report_text.get("1.0", tk.END).rstrip("\n")
+        lines = content.splitlines(keepends=True)
         separator = "----" if self.report_separator == 'line' else ""
 
         changed_count = 0
@@ -7384,7 +7384,7 @@ class OCRApp:
         # 更新报告文本
         yview = self.report_text.yview()
         self.report_text.delete("1.0", tk.END)
-        self.report_text.insert("1.0", "\n".join(new_lines))
+        self.report_text.insert("1.0", ''.join(new_lines))
         self.report_text.yview_moveto(yview[0])
         
         if changed_count > 0:
@@ -7423,7 +7423,7 @@ class OCRApp:
                 })
         
         # 解析报告内容
-        lines = content.split("\n")
+        lines = content.splitlines(keepends=True)
         separator = "----" if self.report_separator == 'line' else ""
 
         # 收集所有实际的名称行（排除标题、分隔线等）
@@ -10259,3 +10259,4 @@ if __name__ == '__main__':
             root.destroy()
         except:
             pass
+
