@@ -771,9 +771,6 @@ class OCRApp:
         tk.Button(r_bar, text="简 -> 繁", command=self.convert_to_traditional, bg="#fff0f5").pack(side=tk.LEFT, padx=2)
         tk.Button(r_bar, text="🔄 替换", command=self._run_replace_rules_report, bg="#fff3e0").pack(side=tk.LEFT, padx=2)
         tk.Button(r_bar, text="⚙️ 替换设置", command=self.show_replace_settings, bg="#fff3e0").pack(side=tk.LEFT, padx=2)
-        sync_btn = tk.Button(r_bar, text="🔄 同步到数据", command=self.sync_report_to_data, bg="#c8e6c9")
-        sync_btn.pack(side=tk.LEFT, padx=2)
-        self.create_tooltip(sync_btn, "将文本报告区域的修改同步到数据源和分类表格\n• 在仅名称模式下修改后，点击此按钮\n• 切换到三列模式时修改也会生效")
 
         # 分隔方式切换按钮
         self.separator_btn = tk.Button(r_bar, text="分隔: ----", bg="#e0f0ff",
