@@ -947,8 +947,9 @@ class OCRApp:
             return
 
         win = tk.Toplevel(self.root)
+        win.withdraw()
         win.title("历史记录")
-        win.geometry("260x420")
+        self.center_window(win, 260, 420)
         win.resizable(False, True)
         win.transient(self.root)
         self._history_win = win
@@ -984,6 +985,7 @@ class OCRApp:
 
         self._refresh_history_panel()
         win.protocol("WM_DELETE_WINDOW", lambda: setattr(self, '_history_win', None) or win.destroy())
+        win.after_idle(lambda: (self.center_window(win, 260, 420), win.deiconify(), win.lift()))
 
     def _refresh_history_panel(self):
         """刷新历史记录面板内容。"""
@@ -6881,6 +6883,24 @@ class OCRApp:
         except Exception as e:
             print(f"⚠️ 加载弹出窗口配置失败: {e}")
             return None
+
+    def center_window(self, window, width=None, height=None):
+        """Center a Tk window on the current screen."""
+        try:
+            window.update_idletasks()
+            if width is None or height is None:
+                geometry_size = window.geometry().split("+", 1)[0]
+                current_width, current_height = [int(v) for v in geometry_size.split("x")[:2]]
+                width = width or current_width
+                height = height or current_height
+
+            screen_width = window.winfo_screenwidth()
+            screen_height = window.winfo_screenheight()
+            x = max(0, (screen_width - width) // 2)
+            y = max(0, (screen_height - height) // 2)
+            window.geometry(f"{width}x{height}+{x}+{y}")
+        except Exception as e:
+            print(f"Center window failed: {e}")
     
     def save_popup_config(self, window_name, window):
         """保存弹出窗口配置"""
@@ -6912,9 +6932,9 @@ class OCRApp:
     def create_popup_window(self, parent, title, window_name, default_width=500, default_height=400, auto_fit=True):
         """创建带配置保存功能的弹出窗口"""
         popup = tk.Toplevel(parent)
+        popup.withdraw()
         popup.title(title)
         popup.transient(parent)
-        popup.grab_set()
         
         # 加载保存的配置
         config = self.load_popup_config(window_name)
@@ -6927,10 +6947,7 @@ class OCRApp:
             height = default_height
 
         # 始终居中显示，不使用保存的位置
-        popup.update_idletasks()
-        x = (popup.winfo_screenwidth() // 2) - (width // 2)
-        y = (popup.winfo_screenheight() // 2) - (height // 2)
-        popup.geometry(f"{width}x{height}+{x}+{y}")
+        self.center_window(popup, width, height)
         
         # 设置最小尺寸
         popup.minsize(default_width, default_height)
@@ -6954,14 +6971,7 @@ class OCRApp:
                 if new_width <= current_width and new_height <= current_height:
                     return
 
-                x = popup.winfo_x()
-                y = popup.winfo_y()
-                if x + new_width > screen_width - 20:
-                    x = max(20, screen_width - new_width - 20)
-                if y + new_height > screen_height - 60:
-                    y = max(20, screen_height - new_height - 60)
-
-                popup.geometry(f"{new_width}x{new_height}+{x}+{y}")
+                self.center_window(popup, new_width, new_height)
             except Exception as e:
                 print(f"⚠️ 自动调整弹窗尺寸失败: {e}")
         
@@ -6982,9 +6992,15 @@ class OCRApp:
                 popup._save_timer = popup.after(500, lambda: self.save_popup_config(window_name, popup))
         
         popup.bind('<Configure>', on_configure)
-        if auto_fit:
-            popup.after_idle(fit_popup_to_content)
-            popup.after(200, fit_popup_to_content)
+
+        def show_popup():
+            if auto_fit:
+                fit_popup_to_content()
+            popup.deiconify()
+            popup.lift()
+            popup.grab_set()
+
+        popup.after_idle(show_popup)
 
         return popup
     
