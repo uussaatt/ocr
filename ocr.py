@@ -451,6 +451,7 @@ class OCRApp:
         self.undo_stack = []
         self.redo_stack = []
         self._pending_snapshot = None
+        self.parsed_snapshot = None
         self.undo_limit = 30
         self.enable_lasso_mode = tk.BooleanVar(value=False)
         self.color_cycle = ['#FF0000', '#00AA00', '#FF8C00', '#9400D3', '#0000FF', '#00CED1']
@@ -681,7 +682,7 @@ class OCRApp:
         # 3. 操作
         op_frame = tk.LabelFrame(self.left_panel, text="3. 全局重置", padx=10, pady=10)
         op_frame.pack(fill=tk.X, pady=10)
-        tk.Button(op_frame, text="🗑️ 清空分类目录树和报告", command=self.clear_all_data, bg="#ffdddd").pack(fill=tk.X)
+        tk.Button(op_frame, text="↩️ 重置为粘贴解析后的状态", command=self.clear_all_data, bg="#ffdddd").pack(fill=tk.X)
 
     def setup_results_tab(self):
         """设置分类结果标签页"""
@@ -3452,30 +3453,21 @@ class OCRApp:
         self.refresh_all()
 
     def clear_all_data(self):
-        """清空分类目录树和文本报告"""
-        if not messagebox.askyesno("确认清空", "确定要清空分类目录树和文本报告吗？\n可以使用「撤销」恢复上一步。"):
+        """将分类表格和报告重置为最近一次粘贴解析后的状态。"""
+        if not self.parsed_snapshot:
+            messagebox.showwarning("提示", "还没有可重置的粘贴解析数据。\n请先使用「粘贴并解析数据」。")
             return
 
-        # 清空数据
-        self.push_undo_snapshot("清空分类目录树")
-        self.df = pd.DataFrame(columns=['Label', 'Y', 'X', 'Group', 'Order'])
-        self.thresholds = []
-        self.category_list = []
-        self.marked_indices = set()
-        self.custom_cat_names = {}
+        if not messagebox.askyesno(
+            "确认重置",
+            "确定要将分类表格和报告重置为最近一次粘贴解析后的状态吗？\n"
+            "条目顺序、分类和文字内容都会恢复；可以使用「撤销」返回当前状态。"
+        ):
+            return
 
-        # 清空树和报告
-        for i in self.tree.get_children():
-            self.tree.delete(i)
-        self.report_text.delete("1.0", tk.END)
-
-        # 清空绘图
-        if self.plot_initialized:
-            self.ax.clear()
-            self.ax.set_title("绘图交互区")
-            self.canvas.draw()
-
-        self.show_temp_message("✓ 已清空")
+        self.push_undo_snapshot("重置为粘贴解析后的状态")
+        self._restore_snapshot(self.parsed_snapshot)
+        self.show_temp_message("✓ 已重置为粘贴解析后的状态")
     
     def add_spaces_to_tree_items(self, silent=False):
         """为分类目录树中的项目名称添加空格。
@@ -4209,6 +4201,8 @@ class OCRApp:
             self.add_spaces_to_tree_items(silent=True)
             self._apply_filter_rules_silent()
             self.refresh_all()
+            self.parsed_snapshot = self._create_classifier_snapshot()
+            self.parsed_snapshot['action_name'] = "粘贴解析后的状态"
 
             self.main_notebook.select(self.classifier_tab)
             self.classifier_notebook.select(self.tab_plt)
@@ -10256,4 +10250,3 @@ if __name__ == '__main__':
             root.destroy()
         except:
             pass
-
