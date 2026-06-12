@@ -368,7 +368,7 @@ class DataStore:
 class OCRApp:
     def __init__(self, root):
         self.root = root
-        self.root.title("OCR 文字识别 + 数据分类工具")
+        self.root.title("OCR 数据分类工具")
         
 
         # 数据存储初始化
@@ -7259,9 +7259,14 @@ class OCRApp:
         """加载替换规则"""
         try:
             self.replace_rules = self.store.get('replace_rules', [])
+            self.replace_rules = self._sort_replace_rules(self.replace_rules)
         except Exception as e:
             print(f"⚠️ 加载替换规则失败: {e}")
             self.replace_rules = []
+
+    def _sort_replace_rules(self, rules):
+        """按查找内容长度降序排列替换规则，避免短规则先替换长规则的一部分。"""
+        return sorted(rules, key=lambda rule: len(str(rule.get('find', ''))), reverse=True)
     
     def load_report_config(self):
         """加载报告格式和分隔方式设置"""
@@ -7336,6 +7341,7 @@ class OCRApp:
         content = self.report_text.get("1.0", tk.END).rstrip("\n")
         lines = content.splitlines(keepends=True)
         separator = "----" if self.report_separator == 'line' else ""
+        replace_rules = self._sort_replace_rules(self.replace_rules)
 
         changed_count = 0
         new_lines = []
@@ -7365,7 +7371,7 @@ class OCRApp:
                 original_name = parts[1]
                 name = original_name
                 # 对名称列进行替换
-                for rule in self.replace_rules:
+                for rule in replace_rules:
                     find = rule.get('find', '')
                     replace = rule.get('replace', '')
                     if find:
@@ -7379,7 +7385,7 @@ class OCRApp:
             else:
                 # 仅名称模式：直接替换整行
                 original_line = line
-                for rule in self.replace_rules:
+                for rule in replace_rules:
                     find = rule.get('find', '')
                     replace = rule.get('replace', '')
                     if find:
@@ -7473,6 +7479,7 @@ class OCRApp:
     def save_replace_config(self):
         """保存替换规则"""
         try:
+            self.replace_rules = self._sort_replace_rules(self.replace_rules)
             self.store.set('replace_rules', self.replace_rules)
         except Exception as e:
             print(f"⚠️ 保存替换规则失败: {e}")
@@ -7484,6 +7491,7 @@ class OCRApp:
         rules = rules if rules is not None else self.replace_rules
         if not rules:
             return 0
+        rules = self._sort_replace_rules(rules)
 
         # 确保 Label 列是字符串类型并保存 before 副本
         self.df['Label'] = self.df['Label'].astype(str)
@@ -7510,7 +7518,7 @@ class OCRApp:
         tk.Label(header, text="🔄  替换规则", bg="#F97316", fg="white",
                  font=("Microsoft YaHei", 12, "bold")).pack(side=tk.LEFT, padx=16, pady=10)
 
-        local_rules = [dict(r) for r in self.replace_rules]
+        local_rules = [dict(r) for r in self._sort_replace_rules(self.replace_rules)]
 
         # 规则列表区
         list_frame = tk.Frame(win, bg="#F8FAFC")
@@ -7589,7 +7597,7 @@ class OCRApp:
                 r = rep_ent.get()
                 if f:
                     rules.append({'find': f, 'replace': r})
-            return rules
+            return self._sort_replace_rules(rules)
 
         def save_and_apply():
             rules = collect_rules()
@@ -8255,7 +8263,7 @@ class OCRApp:
         """显示API密钥设置窗口"""
         settings_window = self.create_popup_window(self.root, "API密钥设置", "api_key_settings", 700, 700)
         
-        tk.Label(settings_window, text="🔑 百度OCR API密钥设置", 
+        tk.Label(settings_window, text="🔑 OCR 密钥设置", 
                 font=("Arial", 14, "bold")).pack(pady=15)
         
         tk.Label(settings_window, text="修改后将自动保存到 .env 文件", 
