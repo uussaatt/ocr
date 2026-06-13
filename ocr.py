@@ -389,6 +389,7 @@ class OCRApp:
         
         # 统计数据
         self.stats = self.store.get('stats', {})
+        self.stats_count_cache_as_success = self.store.get('stats_count_cache_as_success', False)
         
         # 历史记录
         self.history_limit = self.store.get('history_limit', 100)
@@ -537,6 +538,7 @@ class OCRApp:
         # === 设置组 ===
         settings_group = self._create_ribbon_group(ribbon_content, "设置")
         self.api_key_btn = self._create_ribbon_button(settings_group, "🔑\n密钥", self.show_api_key_settings, "#673AB7")
+        self.stats_settings_btn = self._create_ribbon_button(settings_group, "📊\n统计设置", self.show_stats_settings, "#455A64")
         self.unlock_btn = self._create_ribbon_button(settings_group, "🔓\n解锁", self.unlock_size_limit, "#E91E63")
         
         # 拖拽选择区
@@ -650,6 +652,7 @@ class OCRApp:
         self.setup_plot_placeholder()
         self.classifier_notebook.bind("<<NotebookTabChanged>>", self.on_classifier_tab_changed)
         self.apply_font_style()
+        self.install_group_shortcut_bindings()
 
     def setup_left_panel(self):
         """设置左侧控制面板"""
@@ -757,6 +760,10 @@ class OCRApp:
         self.tree.bind("<Up>", self._on_tree_up)                            # ↑ 上移
         self.tree.bind("<Down>", self._on_tree_down)                        # ↓ 下移
         self.tree.bind("<Control-z>", lambda e: self.undo_classifier_action())  # Ctrl+Z 撤销
+        self.tree.bind("<KeyPress-plus>", lambda e: self.set_selected_group_by_shortcut("D"))        # + 改为D组
+        self.tree.bind("<KeyPress-KP_Add>", lambda e: self.set_selected_group_by_shortcut("D"))      # 小键盘+ 改为D组
+        self.tree.bind("<KeyPress-minus>", lambda e: self.set_selected_group_by_shortcut("C"))       # - 改为C组
+        self.tree.bind("<KeyPress-KP_Subtract>", lambda e: self.set_selected_group_by_shortcut("C")) # 小键盘- 改为C组
 
         # --- 报告页 ---
         self.tab_report = tk.Frame(self.inner_nb)
@@ -1494,6 +1501,7 @@ class OCRApp:
 
     def on_drag_start(self, event):
         """开始拖拽或处理特殊列点击"""
+        self.tree.focus_set()
         self.drag_source_item = None
         self.drag_source_index = None
         item = self.tree.identify_row(event.y)
@@ -2517,6 +2525,75 @@ class OCRApp:
         except Exception as e:
             print(f"批量快速设置组值失败: {e}")
             messagebox.showerror("错误", f"设置组值失败：{str(e)}")
+
+    def install_group_shortcut_bindings(self):
+        """安装高优先级改组快捷键，避免 +/- 被其他控件先处理。"""
+        tag = 'GroupShortcut'
+        self.root.bind_class(tag, '<KeyPress>', self.handle_group_shortcut_key, add='+')
+        self.root.bind_all('<KeyPress>', self.handle_group_shortcut_key, add='+')
+        self.prepend_bindtag_recursive(self.root, tag)
+
+    def prepend_bindtag_recursive(self, widget, tag):
+        """把快捷键标签放到控件事件链最前面。"""
+        try:
+            tags = widget.bindtags()
+            if tag not in tags:
+                widget.bindtags((tag,) + tags)
+        except Exception:
+            return
+        for child in widget.winfo_children():
+            self.prepend_bindtag_recursive(child, tag)
+
+    def handle_group_shortcut(self, group_value):
+        """在分类表格页处理 +/- 改组快捷键。"""
+        if not self.is_group_shortcut_context():
+            return
+
+        selected = [i for i in self.tree.selection() if self.is_tree_data_item(i)]
+
+        focus_widget = self.root.focus_get()
+        if focus_widget is not None:
+            focus_class = focus_widget.winfo_class()
+            if not selected and focus_class in ('Entry', 'TEntry', 'Text', 'TCombobox', 'Combobox', 'Spinbox', 'TSpinbox'):
+                return
+            if hasattr(self, 'inline_editor') and focus_widget == self.inline_editor:
+                return
+
+        return self.set_selected_group_by_shortcut(group_value)
+
+    def handle_group_shortcut_key(self, event):
+        """识别 +/- 键并分派到对应改组动作。"""
+        key_char = getattr(event, 'char', '')
+        key_sym = getattr(event, 'keysym', '')
+        if key_char == '+' or key_sym in ('plus', 'KP_Add'):
+            return self.handle_group_shortcut("D")
+        if key_char == '-' or key_sym in ('minus', 'KP_Subtract'):
+            return self.handle_group_shortcut("C")
+
+    def is_group_shortcut_context(self):
+        """只在分类表格页启用改组快捷键。"""
+        try:
+            if self.main_notebook.select() != str(self.classifier_tab):
+                return False
+            if self.classifier_notebook.select() != str(self.tab_res):
+                return False
+            if self.inner_nb.select() != str(self.tab_tree):
+                return False
+            return True
+        except Exception:
+            return False
+
+    def set_selected_group_by_shortcut(self, group_value):
+        """通过快捷键将选中的数据项批量改组；无选择时使用当前焦点行。"""
+        selected = [i for i in self.tree.selection() if self.is_tree_data_item(i)]
+        clicked_iid = selected[0] if selected else self.tree.focus()
+
+        if not clicked_iid or not self.is_tree_data_item(clicked_iid):
+            self.show_temp_message("请选择要改组的数据项")
+            return "break"
+
+        self.set_selected_group_value(clicked_iid, group_value)
+        return "break"
 
     def batch_set_category_group_to_c(self, category_iid):
         """批量将分类下所有数据项的组值设为C（兼容性方法）"""
@@ -6272,13 +6349,20 @@ class OCRApp:
                     import time
                     time.sleep(0.5)
             
+            cached_count = sum(1 for r in self.all_results if r.get('cached') and r.get('count', 0) > 0)
+            cached_lines = sum(r['count'] for r in self.all_results if r.get('cached'))
             success_count = sum(1 for r in self.all_results if r['count'] > 0)
+            api_success_count = success_count - cached_count
             skipped_count = sum(1 for r in self.all_results if r.get('skipped', False))
-            failed_count = total - success_count - skipped_count
+            failed_count = total - api_success_count - cached_count - skipped_count
             total_lines = sum(r['count'] for r in self.all_results)
+            api_lines = total_lines - cached_lines
+            stats_success_count = success_count if self.stats_count_cache_as_success else api_success_count
             
             if total > 0:
-                self.record_ocr('accurate', success_count, failed_count, total_lines)
+                self.record_ocr('accurate', stats_success_count, failed_count, total_lines,
+                                cached_count=cached_count, cached_lines=cached_lines,
+                                api_lines=api_lines, processed_count=total - skipped_count)
                 if skipped_count > 0:
                     today = datetime.now().strftime("%Y-%m-%d")
                     if today in self.stats and 'accurate' in self.stats[today]:
@@ -6299,6 +6383,8 @@ class OCRApp:
             self.root.after(0, lambda: self.select_btn.config(state=tk.NORMAL))
             
             status_msg = f"✓ 高精度识别完成！总:{total} 成功:{success_count}"
+            if cached_count > 0:
+                status_msg += f" 缓存:{cached_count}"
             if skipped_count > 0:
                 status_msg += f" 跳过:{skipped_count}"
             if failed_count > 0:
@@ -6444,14 +6530,21 @@ class OCRApp:
                     import time
                     time.sleep(0.5)
             
+            cached_count = sum(1 for r in self.all_results if r.get('cached') and r.get('count', 0) > 0)
+            cached_lines = sum(r['count'] for r in self.all_results if r.get('cached'))
             success_count = sum(1 for r in self.all_results if r['count'] > 0)
+            api_success_count = success_count - cached_count
             skipped_count = sum(1 for r in self.all_results if r.get('skipped', False))
-            failed_count = total - success_count - skipped_count
+            failed_count = total - api_success_count - cached_count - skipped_count
             total_lines = sum(r['count'] for r in self.all_results)
+            api_lines = total_lines - cached_lines
+            stats_success_count = success_count if self.stats_count_cache_as_success else api_success_count
             
             actual_processed = total - skipped_count
             if actual_processed > 0:
-                self.record_ocr('general', success_count, failed_count, total_lines)
+                self.record_ocr('general', stats_success_count, failed_count, total_lines,
+                                cached_count=cached_count, cached_lines=cached_lines,
+                                api_lines=api_lines, processed_count=actual_processed)
                 # 添加到历史记录（在主线程中执行）
                 results_copy = [r.copy() for r in self.all_results]
                 self.root.after(0, lambda: self.add_to_history('通用识别', results_copy))
@@ -6466,6 +6559,8 @@ class OCRApp:
             self.root.after(0, lambda: self.select_btn.config(state=tk.NORMAL))
             
             status_msg = f"✓ 通用识别完成！总:{total} 成功:{success_count}"
+            if cached_count > 0:
+                status_msg += f" 缓存:{cached_count}"
             if skipped_count > 0:
                 status_msg += f" 跳过:{skipped_count}"
             if failed_count > 0:
@@ -6607,14 +6702,21 @@ class OCRApp:
                     import time
                     time.sleep(0.5)
             
+            cached_count = sum(1 for r in self.all_results if r.get('cached') and r.get('count', 0) > 0)
+            cached_lines = sum(r['count'] for r in self.all_results if r.get('cached'))
             success_count = sum(1 for r in self.all_results if r['count'] > 0)
+            api_success_count = success_count - cached_count
             skipped_count = sum(1 for r in self.all_results if r.get('skipped', False))
-            failed_count = total - success_count - skipped_count
+            failed_count = total - api_success_count - cached_count - skipped_count
             total_lines = sum(r['count'] for r in self.all_results)
+            api_lines = total_lines - cached_lines
+            stats_success_count = success_count if self.stats_count_cache_as_success else api_success_count
             
             actual_processed = total - skipped_count
             if actual_processed > 0:
-                self.record_ocr('basic', success_count, failed_count, total_lines)
+                self.record_ocr('basic', stats_success_count, failed_count, total_lines,
+                                cached_count=cached_count, cached_lines=cached_lines,
+                                api_lines=api_lines, processed_count=actual_processed)
                 # 添加到历史记录（在主线程中执行）
                 results_copy = [r.copy() for r in self.all_results]
                 self.root.after(0, lambda: self.add_to_history('快速识别', results_copy))
@@ -6628,6 +6730,8 @@ class OCRApp:
             self.root.after(0, lambda: self.select_btn.config(state=tk.NORMAL))
             
             status_msg = f"✓ 快速识别完成！总:{total} 成功:{success_count}"
+            if cached_count > 0:
+                status_msg += f" 缓存:{cached_count}"
             if skipped_count > 0:
                 status_msg += f" 跳过:{skipped_count}"
             if failed_count > 0:
@@ -7930,38 +8034,136 @@ class OCRApp:
         except Exception as e:
             print(f"⚠️ 保存统计数据失败: {e}")
             messagebox.showerror("错误", f"统计数据保存失败：{e}")
+
+    def save_stats_settings(self):
+        """保存统计口径设置"""
+        try:
+            self.store.set('stats_count_cache_as_success', self.stats_count_cache_as_success)
+        except Exception as e:
+            print(f"⚠️ 保存统计设置失败: {e}")
+            messagebox.showerror("错误", f"统计设置保存失败：{e}")
+
+    def show_stats_settings(self):
+        """显示统计口径设置"""
+        win = self.create_popup_window(self.root, "统计设置", "stats_settings", 520, 300)
+
+        tk.Label(win, text="📊 统计口径设置",
+                 font=("Arial", 15, "bold")).pack(pady=(20, 10))
+
+        include_cache_var = tk.BooleanVar(value=bool(self.stats_count_cache_as_success))
+
+        option_frame = tk.LabelFrame(win, text="缓存复用", padx=18, pady=14)
+        option_frame.pack(fill=tk.X, padx=28, pady=10)
+
+        tk.Checkbutton(
+            option_frame,
+            text="缓存复用也计入成功统计",
+            variable=include_cache_var,
+            font=("Microsoft YaHei", 11)
+        ).pack(anchor=tk.W)
+
+        hint = (
+            "关闭：缓存只进入“缓存复用”列，成功列表示实际接口识别成功。\n"
+            "开启：缓存会同时计入成功列，适合按处理结果统计。\n"
+            "此设置只影响之后新增的统计记录，不会重算已有统计。"
+        )
+        tk.Label(win, text=hint, fg="gray", justify=tk.LEFT,
+                 font=("Microsoft YaHei", 9)).pack(fill=tk.X, padx=32, pady=(6, 12))
+
+        btn_frame = tk.Frame(win)
+        btn_frame.pack(pady=8)
+
+        def save_settings():
+            self.stats_count_cache_as_success = bool(include_cache_var.get())
+            self.save_stats_settings()
+            win.destroy()
+            messagebox.showinfo("成功", "统计设置已保存！")
+
+        tk.Button(btn_frame, text="保存", command=save_settings,
+                  bg="#4CAF50", fg="white", padx=24, pady=7).pack(side=tk.LEFT, padx=5)
+        tk.Button(btn_frame, text="取消", command=win.destroy,
+                  bg="#757575", fg="white", padx=24, pady=7).pack(side=tk.LEFT, padx=5)
     
-    def record_ocr(self, ocr_type, success_count, failed_count, lines):
+    def _empty_ocr_stats(self):
+        return {
+            'count': 0,
+            'processed': 0,
+            'success': 0,
+            'failed': 0,
+            'cached': 0,
+            'lines': 0,
+            'api_lines': 0,
+            'cached_lines': 0
+        }
+
+    def _ensure_ocr_stats_fields(self, stats, include_skipped=False):
+        defaults = self._empty_ocr_stats()
+        if include_skipped:
+            defaults['skipped'] = 0
+        if 'cached' not in stats:
+            stats['cached'] = 0
+        if 'cached_lines' not in stats:
+            stats['cached_lines'] = 0
+        if 'processed' not in stats:
+            stats['processed'] = stats.get('success', 0) + stats.get('failed', 0) + stats.get('cached', 0)
+        if 'api_lines' not in stats:
+            stats['api_lines'] = max(0, stats.get('lines', 0) - stats.get('cached_lines', 0))
+        for key, value in defaults.items():
+            stats.setdefault(key, value)
+        return stats
+
+    def _normalize_stats_for_display(self):
+        for day_data in self.stats.values():
+            self._ensure_ocr_stats_fields(day_data.setdefault('accurate', {}), include_skipped=True)
+            self._ensure_ocr_stats_fields(day_data.setdefault('basic', {}))
+            self._ensure_ocr_stats_fields(day_data.setdefault('general', {}))
+
+    def record_ocr(self, ocr_type, success_count, failed_count, lines,
+                   cached_count=0, cached_lines=0, api_lines=None, processed_count=None):
         """记录识别统计"""
         today = datetime.now().strftime("%Y-%m-%d")
         
         if today not in self.stats:
             self.stats[today] = {
-                'accurate': {'count': 0, 'success': 0, 'failed': 0, 'skipped': 0, 'lines': 0},
-                'basic': {'count': 0, 'success': 0, 'failed': 0, 'lines': 0},
-                'general': {'count': 0, 'success': 0, 'failed': 0, 'lines': 0}
+                'accurate': {**self._empty_ocr_stats(), 'skipped': 0},
+                'basic': self._empty_ocr_stats(),
+                'general': self._empty_ocr_stats()
             }
         
         # 确保所有模式都存在
         if 'general' not in self.stats[today]:
-            self.stats[today]['general'] = {'count': 0, 'success': 0, 'failed': 0, 'lines': 0}
+            self.stats[today]['general'] = self._empty_ocr_stats()
         
         if 'accurate' not in self.stats[today]:
-            self.stats[today]['accurate'] = {'count': 0, 'success': 0, 'failed': 0, 'skipped': 0, 'lines': 0}
+            self.stats[today]['accurate'] = {**self._empty_ocr_stats(), 'skipped': 0}
         
         if 'basic' not in self.stats[today]:
-            self.stats[today]['basic'] = {'count': 0, 'success': 0, 'failed': 0, 'lines': 0}
+            self.stats[today]['basic'] = self._empty_ocr_stats()
+
+        self._ensure_ocr_stats_fields(self.stats[today]['accurate'], include_skipped=True)
+        self._ensure_ocr_stats_fields(self.stats[today]['basic'])
+        self._ensure_ocr_stats_fields(self.stats[today]['general'])
+
+        if api_lines is None:
+            api_lines = lines - cached_lines
+        if processed_count is None:
+            processed_count = success_count + failed_count + cached_count
         
         self.stats[today][ocr_type]['count'] += 1
+        self.stats[today][ocr_type]['processed'] += processed_count
         self.stats[today][ocr_type]['success'] += success_count
         self.stats[today][ocr_type]['failed'] += failed_count
+        self.stats[today][ocr_type]['cached'] += cached_count
         self.stats[today][ocr_type]['lines'] += lines
+        self.stats[today][ocr_type]['api_lines'] += api_lines
+        self.stats[today][ocr_type]['cached_lines'] += cached_lines
         
         self.save_stats()
 
     
     def show_stats(self):
         """显示统计信息"""
+        self._normalize_stats_for_display()
         stats_window = self.create_popup_window(self.root, "识别统计", "stats_window", 1100, 850)
         
         tk.Label(stats_window, text="📊 OCR 识别统计", 
@@ -8498,21 +8700,17 @@ class OCRApp:
     def _show_total_stats(self, parent):
         """显示总计统计"""
         # 计算总计
-        total_acc_count = 0
-        total_acc_success = 0
-        total_bas_count = 0
-        total_bas_success = 0
-        total_gen_count = 0
-        total_gen_success = 0
+        totals = {
+            'accurate': self._empty_ocr_stats(),
+            'basic': self._empty_ocr_stats(),
+            'general': self._empty_ocr_stats()
+        }
         
         for day_data in self.stats.values():
-            if 'accurate' in day_data:
-                total_acc_count += day_data['accurate'].get('count', 0)
-                total_acc_success += day_data['accurate'].get('success', 0)
-                total_bas_count += day_data['basic'].get('count', 0)
-                total_bas_success += day_data['basic'].get('success', 0)
-                total_gen_count += day_data.get('general', {}).get('count', 0)
-                total_gen_success += day_data.get('general', {}).get('success', 0)
+            for mode in totals:
+                mode_stats = day_data.get(mode, {})
+                for key in totals[mode]:
+                    totals[mode][key] += mode_stats.get(key, 0)
         
         total_days = len(self.stats)
         
@@ -8520,42 +8718,51 @@ class OCRApp:
         info_frame.pack(fill=tk.BOTH, expand=True, padx=30, pady=20)
         
         # 计算日平均
-        avg_acc_count = total_acc_count / total_days if total_days > 0 else 0
-        avg_acc_success = total_acc_success / total_days if total_days > 0 else 0
-        avg_bas_count = total_bas_count / total_days if total_days > 0 else 0
-        avg_bas_success = total_bas_success / total_days if total_days > 0 else 0
-        avg_gen_count = total_gen_count / total_days if total_days > 0 else 0
-        avg_gen_success = total_gen_success / total_days if total_days > 0 else 0
-        
-        total_all_count = total_acc_count + total_bas_count + total_gen_count
-        total_all_success = total_acc_success + total_bas_success + total_gen_success
+        acc = totals['accurate']
+        bas = totals['basic']
+        gen = totals['general']
+        total_all_count = sum(totals[mode]['count'] for mode in totals)
+        total_all_processed = sum(totals[mode]['processed'] for mode in totals)
+        total_all_success = sum(totals[mode]['success'] for mode in totals)
+        total_all_cached = sum(totals[mode]['cached'] for mode in totals)
+        total_all_lines = sum(totals[mode]['lines'] for mode in totals)
+        success_label = "成功(含缓存)" if self.stats_count_cache_as_success else "接口成功"
         
         total_info = f"""
 使用天数: {total_days} 天
+当前口径: 缓存复用{'计入' if self.stats_count_cache_as_success else '不计入'}成功统计
 
 【高精度识别】
-  识别次数: {total_acc_count} 次
-  成功图片: {total_acc_success} 张
-  日平均次数: {avg_acc_count:.1f} 次/天
-  日平均成功: {avg_acc_success:.1f} 张/天
+  处理批次: {acc['count']} 次
+  处理图片: {acc['processed']} 张
+  {success_label}: {acc['success']} 张
+  缓存复用: {acc['cached']} 张
+  输出行数: {acc['lines']} 行
+  日平均处理: {acc['processed'] / total_days if total_days > 0 else 0:.1f} 张/天
 
 【快速识别】
-  识别次数: {total_bas_count} 次
-  成功图片: {total_bas_success} 张
-  日平均次数: {avg_bas_count:.1f} 次/天
-  日平均成功: {avg_bas_success:.1f} 张/天
+  处理批次: {bas['count']} 次
+  处理图片: {bas['processed']} 张
+  {success_label}: {bas['success']} 张
+  缓存复用: {bas['cached']} 张
+  输出行数: {bas['lines']} 行
+  日平均处理: {bas['processed'] / total_days if total_days > 0 else 0:.1f} 张/天
 
 【通用识别】
-  识别次数: {total_gen_count} 次
-  成功图片: {total_gen_success} 张
-  日平均次数: {avg_gen_count:.1f} 次/天
-  日平均成功: {avg_gen_success:.1f} 张/天
+  处理批次: {gen['count']} 次
+  处理图片: {gen['processed']} 张
+  {success_label}: {gen['success']} 张
+  缓存复用: {gen['cached']} 张
+  输出行数: {gen['lines']} 行
+  日平均处理: {gen['processed'] / total_days if total_days > 0 else 0:.1f} 张/天
 
 【总计】
-  总识别次数: {total_all_count} 次
-  总成功图片: {total_all_success} 张
-  日平均识别: {total_all_count / total_days if total_days > 0 else 0:.1f} 次/天
-  日平均成功: {total_all_success / total_days if total_days > 0 else 0:.1f} 张/天
+  总处理批次: {total_all_count} 次
+  总处理图片: {total_all_processed} 张
+  总{success_label}: {total_all_success} 张
+  总缓存复用: {total_all_cached} 张
+  总输出行数: {total_all_lines} 行
+  日平均处理: {total_all_processed / total_days if total_days > 0 else 0:.1f} 张/天
         """
         tk.Label(info_frame, text=total_info, font=("Arial", 11), 
                 justify=tk.LEFT, anchor=tk.W).pack(fill=tk.BOTH, expand=True)
@@ -8573,21 +8780,30 @@ class OCRApp:
         scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
         
         # 创建表格
-        columns = ("日期", "类型", "次数", "成功")
+        success_col = "成功(含缓存)" if self.stats_count_cache_as_success else "接口成功"
+        columns = ("日期", "类型", "批次", "处理", success_col, "缓存复用", "失败", "行数")
         tree = ttk.Treeview(table_frame, columns=columns, show="headings", 
                            yscrollcommand=scrollbar.set, height=25, selectmode="extended")
         
         # 设置列标题
         tree.heading("日期", text="日期")
         tree.heading("类型", text="类型")
-        tree.heading("次数", text="次数")
-        tree.heading("成功", text="成功")
+        tree.heading("批次", text="批次")
+        tree.heading("处理", text="处理")
+        tree.heading(success_col, text=success_col)
+        tree.heading("缓存复用", text="缓存复用")
+        tree.heading("失败", text="失败")
+        tree.heading("行数", text="行数")
         
         # 设置列宽度和对齐方式
         tree.column("日期", width=150, anchor=tk.CENTER)
-        tree.column("类型", width=120, anchor=tk.CENTER)
-        tree.column("次数", width=100, anchor=tk.CENTER)
-        tree.column("成功", width=100, anchor=tk.CENTER)
+        tree.column("类型", width=100, anchor=tk.CENTER)
+        tree.column("批次", width=70, anchor=tk.CENTER)
+        tree.column("处理", width=70, anchor=tk.CENTER)
+        tree.column(success_col, width=110 if self.stats_count_cache_as_success else 90, anchor=tk.CENTER)
+        tree.column("缓存复用", width=90, anchor=tk.CENTER)
+        tree.column("失败", width=70, anchor=tk.CENTER)
+        tree.column("行数", width=80, anchor=tk.CENTER)
         
         # 配置滚动条
         scrollbar.config(command=tree.yview)
@@ -8674,33 +8890,53 @@ class OCRApp:
             
             if 'accurate' in day_data:
                 acc = day_data['accurate']
-                bas = day_data['basic']
-                gen = day_data.get('general', {'count': 0, 'success': 0})
+                bas = day_data.get('basic', {})
+                gen = day_data.get('general', {})
                 
                 # 插入高精度数据
                 tree.insert("", tk.END, iid=f"daily|{date}|accurate", values=(date, "高精度",
                                                acc.get('count', 0), 
-                                               acc.get('success', 0)),
+                                               acc.get('processed', 0),
+                                               acc.get('success', 0),
+                                               acc.get('cached', 0),
+                                               acc.get('failed', 0),
+                                               acc.get('lines', 0)),
                            tags=("accurate",))
                 
                 # 插入快速识别数据
                 tree.insert("", tk.END, iid=f"daily|{date}|basic", values=("", "快速",
                                                bas.get('count', 0), 
-                                               bas.get('success', 0)),
+                                               bas.get('processed', 0),
+                                               bas.get('success', 0),
+                                               bas.get('cached', 0),
+                                               bas.get('failed', 0),
+                                               bas.get('lines', 0)),
                            tags=("basic",))
                 
                 # 插入通用识别数据
                 tree.insert("", tk.END, iid=f"daily|{date}|general", values=("", "通用",
                                                gen.get('count', 0), 
-                                               gen.get('success', 0)),
+                                               gen.get('processed', 0),
+                                               gen.get('success', 0),
+                                               gen.get('cached', 0),
+                                               gen.get('failed', 0),
+                                               gen.get('lines', 0)),
                            tags=("general",))
                 
                 # 插入日合计
                 day_total_count = acc.get('count', 0) + bas.get('count', 0) + gen.get('count', 0)
+                day_total_processed = acc.get('processed', 0) + bas.get('processed', 0) + gen.get('processed', 0)
                 day_total_success = acc.get('success', 0) + bas.get('success', 0) + gen.get('success', 0)
+                day_total_cached = acc.get('cached', 0) + bas.get('cached', 0) + gen.get('cached', 0)
+                day_total_failed = acc.get('failed', 0) + bas.get('failed', 0) + gen.get('failed', 0)
+                day_total_lines = acc.get('lines', 0) + bas.get('lines', 0) + gen.get('lines', 0)
                 tree.insert("", tk.END, iid=f"daily|{date}|total", values=("", "日合计",
                                                day_total_count, 
-                                               day_total_success),
+                                               day_total_processed,
+                                               day_total_success,
+                                               day_total_cached,
+                                               day_total_failed,
+                                               day_total_lines),
                            tags=("total",))
         
         # 设置行颜色
@@ -8720,24 +8956,22 @@ class OCRApp:
                 
                 if month not in monthly_data:
                     monthly_data[month] = {
-                        'accurate': {'count': 0, 'success': 0},
-                        'basic': {'count': 0, 'success': 0},
-                        'general': {'count': 0, 'success': 0},
+                        'accurate': self._empty_ocr_stats(),
+                        'basic': self._empty_ocr_stats(),
+                        'general': self._empty_ocr_stats(),
                         'days': set()
                     }
                 
                 monthly_data[month]['days'].add(date)
                 
                 acc = day_data['accurate']
-                bas = day_data['basic']
-                gen = day_data.get('general', {'count': 0, 'success': 0})
+                bas = day_data.get('basic', {})
+                gen = day_data.get('general', {})
                 
-                monthly_data[month]['accurate']['count'] += acc.get('count', 0)
-                monthly_data[month]['accurate']['success'] += acc.get('success', 0)
-                monthly_data[month]['basic']['count'] += bas.get('count', 0)
-                monthly_data[month]['basic']['success'] += bas.get('success', 0)
-                monthly_data[month]['general']['count'] += gen.get('count', 0)
-                monthly_data[month]['general']['success'] += gen.get('success', 0)
+                for key in self._empty_ocr_stats():
+                    monthly_data[month]['accurate'][key] += acc.get(key, 0)
+                    monthly_data[month]['basic'][key] += bas.get(key, 0)
+                    monthly_data[month]['general'][key] += gen.get(key, 0)
         
         # 创建表格框架
         from tkinter import ttk
@@ -8750,7 +8984,8 @@ class OCRApp:
         scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
         
         # 创建表格
-        columns = ("月份", "天数", "类型", "次数", "成功", "日均")
+        success_col = "成功(含缓存)" if self.stats_count_cache_as_success else "接口成功"
+        columns = ("月份", "天数", "类型", "批次", "处理", success_col, "缓存复用", "行数", "日均")
         tree = ttk.Treeview(table_frame, columns=columns, show="headings", 
                            yscrollcommand=scrollbar.set, height=25)
         
@@ -8758,16 +8993,22 @@ class OCRApp:
         tree.heading("月份", text="月份")
         tree.heading("天数", text="天数")
         tree.heading("类型", text="类型")
-        tree.heading("次数", text="次数")
-        tree.heading("成功", text="成功")
+        tree.heading("批次", text="批次")
+        tree.heading("处理", text="处理")
+        tree.heading(success_col, text=success_col)
+        tree.heading("缓存复用", text="缓存复用")
+        tree.heading("行数", text="行数")
         tree.heading("日均", text="日均")
         
         # 设置列宽度和对齐方式
         tree.column("月份", width=120, anchor=tk.CENTER)
         tree.column("天数", width=80, anchor=tk.CENTER)
         tree.column("类型", width=100, anchor=tk.CENTER)
-        tree.column("次数", width=80, anchor=tk.CENTER)
-        tree.column("成功", width=80, anchor=tk.CENTER)
+        tree.column("批次", width=70, anchor=tk.CENTER)
+        tree.column("处理", width=70, anchor=tk.CENTER)
+        tree.column(success_col, width=110 if self.stats_count_cache_as_success else 90, anchor=tk.CENTER)
+        tree.column("缓存复用", width=90, anchor=tk.CENTER)
+        tree.column("行数", width=80, anchor=tk.CENTER)
         tree.column("日均", width=100, anchor=tk.CENTER)
         
         # 配置滚动条
@@ -8786,36 +9027,53 @@ class OCRApp:
             data = monthly_data[month]
             acc = data['accurate']
             bas = data['basic']
+            gen = data['general']
             days = len(data['days'])
             
             # 计算日平均
-            avg_acc = acc['count'] / days if days > 0 else 0
-            avg_bas = bas['count'] / days if days > 0 else 0
+            avg_acc = acc['processed'] / days if days > 0 else 0
+            avg_bas = bas['processed'] / days if days > 0 else 0
+            avg_gen = gen['processed'] / days if days > 0 else 0
             
             # 插入高精度数据
             tree.insert("", tk.END, values=(month, days, "高精度", 
-                                           acc['count'], acc['success'], 
+                                           acc['count'], acc['processed'], acc['success'],
+                                           acc['cached'], acc['lines'],
                                            f"{avg_acc:.1f}"),
                        tags=("accurate",))
             
             # 插入快速识别数据
             tree.insert("", tk.END, values=("", "", "快速", 
-                                           bas['count'], bas['success'], 
+                                           bas['count'], bas['processed'], bas['success'],
+                                           bas['cached'], bas['lines'],
                                            f"{avg_bas:.1f}"),
                        tags=("basic",))
+
+            # 插入通用识别数据
+            tree.insert("", tk.END, values=("", "", "通用",
+                                           gen['count'], gen['processed'], gen['success'],
+                                           gen['cached'], gen['lines'],
+                                           f"{avg_gen:.1f}"),
+                       tags=("general",))
             
             # 插入月合计
-            month_total_count = acc['count'] + bas['count']
-            month_total_success = acc['success'] + bas['success']
-            avg_total = month_total_count / days if days > 0 else 0
+            month_total_count = acc['count'] + bas['count'] + gen['count']
+            month_total_processed = acc['processed'] + bas['processed'] + gen['processed']
+            month_total_success = acc['success'] + bas['success'] + gen['success']
+            month_total_cached = acc['cached'] + bas['cached'] + gen['cached']
+            month_total_lines = acc['lines'] + bas['lines'] + gen['lines']
+            avg_total = month_total_processed / days if days > 0 else 0
             tree.insert("", tk.END, values=("", "", "月合计", 
-                                           month_total_count, month_total_success, 
+                                           month_total_count, month_total_processed,
+                                           month_total_success, month_total_cached,
+                                           month_total_lines,
                                            f"{avg_total:.1f}"),
                        tags=("total",))
         
         # 设置行颜色
         tree.tag_configure("accurate", background="#E3F2FD")
         tree.tag_configure("basic", background="#FFF3E0")
+        tree.tag_configure("general", background="#F3E5F5")
         tree.tag_configure("total", background="#E8F5E9", font=("Microsoft YaHei", 10, "bold"))
     
     def export_results(self):
